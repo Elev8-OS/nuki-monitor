@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nuki Monitor</title>
+<style>
+  :root { --paper:#fff; --ink:#000; --rule:#e2e2e2; --muted:#6b6b6b; --quiet:#f5f5f5; --accent:#f6bb12; --alarm:#c8322b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:15px; line-height:1.5; font-variant-numeric:tabular-nums; }
+  .wrap { max-width:1180px; margin:0 auto; padding:26px 20px 90px; }
+  a { color:inherit; }
+
+  header.top { display:flex; flex-wrap:wrap; align-items:baseline; gap:12px 20px; padding-bottom:16px; border-bottom:2px solid var(--ink); }
+  h1 { font-size:21px; font-weight:650; margin:0; letter-spacing:-.01em; }
+  .meta { color:var(--muted); font-size:13px; margin-left:auto; }
+  .controls { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  select, button, .btn {
+    font:inherit; color:var(--ink); background:var(--paper); border:1px solid var(--ink);
+    border-radius:0; padding:5px 10px; cursor:pointer; text-decoration:none; display:inline-block;
+  }
+  select:hover, button:hover, .btn:hover { background:var(--accent); }
+  select:focus-visible, button:focus-visible, .btn:focus-visible, tbody tr:focus-visible { outline:3px solid var(--accent); outline-offset:1px; }
+  button[disabled] { opacity:.5; cursor:default; }
+
+  .figures { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); border-bottom:1px solid var(--rule); }
+  .figure { padding:20px 20px 18px 0; }
+  .figure .value { font-size:34px; font-weight:650; line-height:1; letter-spacing:-.02em; }
+  .figure .value.flag { color:var(--alarm); }
+  .figure .label { font-size:13px; color:var(--muted); margin-top:6px; }
+
+  h2 { font-size:15px; font-weight:650; margin:32px 0 4px; }
+  .lede { color:var(--muted); font-size:13px; margin:0 0 14px; max-width:72ch; }
+
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; font-size:12.5px; font-weight:550; color:var(--muted); padding:0 10px 7px 0; border-bottom:1px solid var(--ink); white-space:nowrap; }
+  th.num, td.num { text-align:right; padding-right:14px; }
+  td { padding:11px 10px 11px 0; border-bottom:1px solid var(--rule); vertical-align:top; }
+  tbody.clickable tr { cursor:pointer; }
+  tbody.clickable tr:hover, tbody tr[aria-expanded="true"] { background:var(--quiet); }
+  .name { font-weight:550; }
+  .sub { color:var(--muted); font-size:12.5px; }
+
+  .dot { display:inline-block; width:8px; height:8px; margin-right:7px; vertical-align:1px; }
+  .dot.on { background:var(--ink); } .dot.off { background:var(--alarm); } .dot.unknown { background:var(--rule); }
+
+  .strip { position:relative; height:15px; min-width:150px; background:var(--quiet); border:1px solid var(--rule); }
+  .strip span { position:absolute; top:0; bottom:0; background:var(--alarm); min-width:2px; }
+  .strip span.ongoing { background:repeating-linear-gradient(45deg,var(--alarm) 0 4px,#e08b86 4px 8px); }
+  .strip span.gap { background:repeating-linear-gradient(45deg,#cfcfcf 0 3px,#eee 3px 6px); }
+  .strip i { position:absolute; top:-3px; bottom:-3px; width:2px; background:var(--accent); }
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:8px; }
+  .legend b { display:inline-block; width:16px; height:9px; vertical-align:0; margin-right:5px; }
+
+  .bad { color:var(--alarm); font-weight:600; }
+  .verdict { font-weight:600; }
+  .verdict.good { color:#1d7a3c; } .verdict.worse { color:var(--alarm); }
+
+  .hours { display:flex; align-items:flex-end; gap:2px; height:70px; margin-top:10px; }
+  .hours div { flex:1; background:var(--ink); min-height:1px; }
+  .hours div.peak { background:var(--accent); }
+  .hours-axis { display:flex; justify-content:space-between; font-size:11.5px; color:var(--muted); margin-top:4px; }
+
+  tr.detail td { background:var(--quiet); padding:0 0 18px; }
+  .detail-inner { padding:14px 16px; border-left:3px solid var(--accent); }
+  .detail-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:18px; }
+  .events { max-height:300px; overflow:auto; border:1px solid var(--rule); background:var(--paper); }
+  .events div { padding:6px 10px; border-bottom:1px solid var(--rule); font-size:13px; }
+  .events div:last-child { border-bottom:0; }
+  .events time { color:var(--muted); margin-right:8px; }
+  pre { margin:0; padding:10px; background:var(--paper); border:1px solid var(--rule); max-height:300px; overflow:auto; font-size:12px; }
+
+  .notice { padding:12px 14px; border-left:3px solid var(--accent); background:var(--quiet); font-size:13.5px; margin:14px 0; }
+  .notice.error { border-left-color:var(--alarm); }
+
+  footer { margin-top:40px; padding-top:14px; border-top:1px solid var(--rule); color:var(--muted); font-size:12.5px; }
+
+  @media (max-width:820px) { th.hide, td.hide { display:none; } .figure .value { font-size:27px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>Nuki Monitor</h1>
+    <div class="controls">
+      <select id="days" aria-label="Zeitraum">
+        <option value="1">24 Stunden</option>
+        <option value="3">3 Tage</option>
+        <option value="7" selected>7 Tage</option>
+        <option value="14">14 Tage</option>
+        <option value="30">30 Tage</option>
+      </select>
+      <button id="pollnow" type="button">Jetzt abfragen</button>
+      <a class="btn" id="exportSummary" href="/api/export/summary.csv?days=7">Übersicht als CSV</a>
+      <a class="btn" id="exportOutages" href="/api/export/outages.csv?days=7">Ausfälle als CSV</a>
+      <a class="btn" href="/setup">Standorte &amp; Änderungen</a>
+    </div>
+    <div class="meta" id="stamp">lädt…</div>
+  </header>
+
+  <div id="messages"></div>
+
+  <section class="figures" id="figures"></section>
+
+  <h2>Wirkung der Änderungen</h2>
+  <p class="lede">Vergleicht dasselbe Zeitfenster vor und nach einer eingetragenen Änderung, nur für die Schlösser des betroffenen Standorts. Änderungen trägst du unter Standorte &amp; Änderungen ein.</p>
+  <div id="compare"></div>
+
+  <h2>Standorte</h2>
+  <p class="lede">Abbrüche pro Schloss, damit grosse und kleine Standorte vergleichbar bleiben. Die Router-Merkmale stammen aus eurer Eingabe, nicht aus dem Netz.</p>
+  <table>
+    <thead><tr>
+      <th>Standort</th><th class="hide">Router</th><th class="hide">WPA</th><th class="hide">Kanal</th><th class="hide">Mesh</th>
+      <th class="num">Schlösser</th><th class="num">Abbrüche</th><th class="num">pro Schloss</th>
+    </tr></thead>
+    <tbody id="siteRows"></tbody>
+  </table>
+
+  <h2>Schlösser nach Abbrüchen</h2>
+  <p class="lede">Der Balken läuft vom Beginn des Zeitraums bis jetzt. Zeile antippen für Ereignisse, Akkuverlauf und Rohdaten.</p>
+
+  <table>
+    <thead><tr>
+      <th>Schloss</th><th class="num">Abbrüche</th><th class="num hide">Ausfallzeit</th>
+      <th class="num hide">Verfügbar</th><th class="hide">Firmware</th><th class="num hide">Akku</th><th>Verlauf</th>
+    </tr></thead>
+    <tbody id="rows" class="clickable"><tr><td colspan="7" class="sub">Daten werden geladen…</td></tr></tbody>
+  </table>
+  <div class="legend">
+    <span><b style="background:var(--alarm)"></b>offline</span>
+    <span><b style="background:repeating-linear-gradient(45deg,var(--alarm) 0 4px,#e08b86 4px 8px)"></b>läuft noch</span>
+    <span><b style="background:repeating-linear-gradient(45deg,#cfcfcf 0 3px,#eee 3px 6px)"></b>keine Messung</span>
+    <span><b style="background:var(--accent);width:3px"></b>Firmware- oder Konfigurationsänderung</span>
+  </div>
+
+  <h2>Abbrüche nach Tageszeit</h2>
+  <p class="lede">Alle Standorte zusammen, in der Zeitzone dieses Browsers. Eine Spitze zu einer festen Stunde spricht für einen wiederkehrenden Auslöser.</p>
+  <div class="hours" id="hours"></div>
+  <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+
+  <h2>Sonden vor Ort</h2>
+  <p class="lede">Optional. Eine Sonde im Netz des Standorts misst das Schloss direkt und unterscheidet damit ein WLAN-Problem von einem Cloud-Problem.</p>
+  <div id="probes"></div>
+
+  <footer id="footer"></footer>
+</div>
+
+<script>
+const state = { days: 7, data: null };
+
+const fmtTime = (iso) => new Date(iso).toLocaleString('de-CH', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+
+function fmtDuration(ms) {
+  if (!ms) return '—';
+  const min = Math.round(ms / 60000);
+  if (min < 60) return min + ' min';
+  const h = Math.floor(min / 60);
+  if (h < 24) return (min % 60) ? `${h} h ${min % 60} min` : `${h} h`;
+  return `${Math.floor(h / 24)} d ${h % 24} h`;
+}
+
+function el(tag, props = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') node.className = v;
+    else if (k === 'text') node.textContent = v;
+    else node.setAttribute(k, v);
+  }
+  children.forEach((c) => c && node.appendChild(c));
+  return node;
+}
+
+function message(text, kind = '') {
+  document.getElementById('messages').appendChild(el('div', { class: 'notice ' + kind, text }));
+}
+
+function renderFigures(data) {
+  const s = data.summary;
+  const items = [
+    { value: s.offline_now, label: 'jetzt offline', flag: s.offline_now > 0 },
+    { value: s.total_disconnects, label: 'Abbrüche im Zeitraum' },
+    { value: `${s.devices_affected} / ${s.devices}`, label: 'betroffene Schlösser' },
+    { value: s.clustered_disconnects, label: 'standortübergreifend', flag: s.clustered_disconnects > 0 },
+    { value: ((data.coverage.coverage ?? 0) * 100).toFixed(1) + ' %', label: 'Messabdeckung',
+      flag: (data.coverage.coverage ?? 1) < 0.95 },
+    { value: s.battery_critical, label: 'Akku kritisch' }
+  ];
+  document.getElementById('figures').replaceChildren(...items.map((i) =>
+    el('div', { class: 'figure' }, [
+      el('div', { class: 'value' + (i.flag ? ' flag' : ''), text: String(i.value) }),
+      el('div', { class: 'label', text: i.label })
+    ])));
+}
+
+function renderStrip(device, data) {
+  const from = new Date(data.window.from).getTime();
+  const to = new Date(data.window.to).getTime();
+  const span = to - from || 1;
+  const strip = el('div', { class: 'strip' });
+
+  const place = (node, start, end) => {
+    node.style.left = ((start - from) / span) * 100 + '%';
+    node.style.width = Math.max(0.4, ((end - start) / span) * 100) + '%';
+    strip.appendChild(node);
+  };
+
+  data.coverage.gaps.forEach((gap) => {
+    const start = Math.max(from, new Date(gap.start).getTime());
+    const end = Math.min(to, new Date(gap.end).getTime());
+    if (end > start) place(el('span', { class: 'gap', title: `Keine Messung: ${fmtTime(gap.start)} bis ${fmtTime(gap.end)}` }), start, end);
+  });
+
+  device.outages.forEach((o) => {
+    const start = Math.max(from, new Date(o.start).getTime());
+    const end = Math.min(to, new Date(o.end).getTime());
+    if (end <= start) return;
+    place(el('span', {
+      class: o.ongoing ? 'ongoing' : '',
+      title: `${fmtTime(o.start)} bis ${o.ongoing ? 'jetzt' : fmtTime(o.end)} · ${fmtDuration(end - start)}`
+    }), start, end);
+  });
+
+  const marks = [
+    ...device.firmware_changes.map((c) => ({ at: c.at, label: `Firmware ${c.from || '?'} auf ${c.to || '?'}` })),
+    ...data.changes
+      .filter((c) => !c.site_id || c.site_id === device.site_id)
+      .map((c) => ({ at: c.at, label: c.title }))
+  ];
+
+  marks.forEach((mark) => {
+    const at = new Date(mark.at).getTime();
+    if (at < from || at > to) return;
+    const node = el('i', { title: `${mark.label} · ${fmtTime(mark.at)}` });
+    node.style.left = ((at - from) / span) * 100 + '%';
+    strip.appendChild(node);
+  });
+
+  return strip;
+}
+
+const stateDot = (online) => online === true ? 'dot on' : online === false ? 'dot off' : 'dot unknown';
+
+function renderRows(data) {
+  const body = document.getElementById('rows');
+  if (!data.devices.length) {
+    body.replaceChildren(el('tr', {}, [el('td', { colspan: '7', class: 'sub',
+      text: 'Noch keine Schlösser erfasst. Die erste Abfrage läuft innerhalb einer Minute nach dem Start.' })]));
+    return;
+  }
+
+  body.replaceChildren(...data.devices.map((device) => {
+    const tr = el('tr', { tabindex: '0', 'aria-expanded': 'false' });
+    tr.append(
+      el('td', {}, [
+        el('div', { class: 'name' }, [
+          el('span', { class: stateDot(device.online), title: 'serverState ' + device.server_state }),
+          document.createTextNode(device.name)
+        ]),
+        el('div', { class: 'sub', text: device.site_name || 'ohne Standort' })
+      ]),
+      el('td', { class: 'num' + (device.disconnects ? ' bad' : ''), text: String(device.disconnects) }),
+      el('td', { class: 'num hide', text: fmtDuration(device.downtime_ms) }),
+      el('td', { class: 'num hide', text: device.availability === null ? '—' : (device.availability * 100).toFixed(2) + ' %' }),
+      el('td', { class: 'hide', text: device.firmware || String(device.firmware_raw ?? '—') }),
+      el('td', { class: 'num hide', text: device.battery_charge === null ? '—' : device.battery_charge + ' %' }),
+      el('td', {}, [renderStrip(device, data)])
+    );
+
+    const toggle = () => openDetail(device, tr);
+    tr.addEventListener('click', toggle);
+    tr.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+    return tr;
+  }));
+}
+
+function renderSites(data) {
+  const body = document.getElementById('siteRows');
+  body.replaceChildren(...data.sites.map((site) =>
+    el('tr', {}, [
+      el('td', { class: 'name', text: site.site }),
+      el('td', { class: 'hide', text: site.router_model || '—' }),
+      el('td', { class: 'hide', text: site.wpa_mode || '—' }),
+      el('td', { class: 'hide', text: site.wifi_channel || '—' }),
+      el('td', { class: 'hide', text: site.has_mesh === null ? '—' : site.has_mesh ? 'ja' : 'nein' }),
+      el('td', { class: 'num', text: String(site.devices) }),
+      el('td', { class: 'num' + (site.disconnects ? ' bad' : ''), text: String(site.disconnects) }),
+      el('td', { class: 'num', text: site.disconnects_per_device.toFixed(2) })
+    ])));
+}
+
+async function renderCompare(data) {
+  const box = document.getElementById('compare');
+  if (!data.all_changes?.length) {
+    box.replaceChildren(el('div', { class: 'sub', text: 'Noch keine Änderungen eingetragen.' }));
+    return;
+  }
+
+  const rows = await Promise.all(data.all_changes.slice(0, 8).map(async (change) => {
+    try {
+      const res = await fetch(`/api/compare?id=${change.id}&hours=72`);
+      const c = await res.json();
+      if (!res.ok) throw new Error(c.error);
+      const cls = c.verdict.includes('besser') ? ' good' : c.verdict === 'schlechter' ? ' worse' : '';
+      return el('tr', {}, [
+        el('td', {}, [
+          el('div', { class: 'name', text: change.title }),
+          el('div', { class: 'sub', text: `${change.site_name || 'alle Standorte'} · ${fmtTime(change.applied_at)}` })
+        ]),
+        el('td', { class: 'num', text: String(c.before.disconnects) }),
+        el('td', { class: 'num', text: String(c.after.disconnects) }),
+        el('td', { class: 'num hide', text: fmtDuration(c.before.downtime_ms) }),
+        el('td', { class: 'num hide', text: fmtDuration(c.after.downtime_ms) }),
+        el('td', {}, [
+          el('span', { class: 'verdict' + cls, text: c.verdict }),
+          c.complete ? null : el('div', { class: 'sub', text: `erst ${c.elapsed_hours} von 72 h vergangen` })
+        ])
+      ]);
+    } catch (error) {
+      return el('tr', {}, [el('td', { colspan: '6', class: 'sub', text: change.title + ': ' + error.message })]);
+    }
+  }));
+
+  const table = el('table', {}, [
+    el('thead', {}, [el('tr', {}, [
+      el('th', { text: 'Änderung' }),
+      el('th', { class: 'num', text: 'Abbrüche 72 h davor' }),
+      el('th', { class: 'num', text: 'danach' }),
+      el('th', { class: 'num hide', text: 'Ausfall davor' }),
+      el('th', { class: 'num hide', text: 'danach' }),
+      el('th', { text: 'Bewertung' })
+    ])]),
+    el('tbody', {}, rows)
+  ]);
+  box.replaceChildren(table);
+}
+
+function renderProbes(probes) {
+  const box = document.getElementById('probes');
+  if (!probes.length) {
+    box.replaceChildren(el('div', { class: 'sub', text: 'Keine Sondendaten. Siehe probe/README im Repository.' }));
+    return;
+  }
+  box.replaceChildren(el('table', {}, [
+    el('thead', {}, [el('tr', {}, [
+      el('th', { text: 'Standort' }), el('th', { class: 'num', text: 'Messungen' }),
+      el('th', { class: 'num', text: 'Fehlschläge' }), el('th', { class: 'num', text: 'Antwortzeit' }),
+      el('th', { text: 'zuletzt' })
+    ])]),
+    el('tbody', {}, probes.map((p) => el('tr', {}, [
+      el('td', { text: p.site_name || 'unbekannt' }),
+      el('td', { class: 'num', text: String(p.samples) }),
+      el('td', { class: 'num' + (p.failures ? ' bad' : ''), text: String(p.failures) }),
+      el('td', { class: 'num', text: p.avg_rtt_ms === null ? '—' : Number(p.avg_rtt_ms).toFixed(1) + ' ms' }),
+      el('td', { text: fmtTime(p.last_seen) })
+    ])))
+  ]));
+}
+
+async function openDetail(device, tr) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains('detail')) {
+    next.remove();
+    tr.setAttribute('aria-expanded', 'false');
+    return;
+  }
+  document.querySelectorAll('tr.detail').forEach((n) => n.remove());
+  document.querySelectorAll('tbody.clickable tr').forEach((n) => n.setAttribute('aria-expanded', 'false'));
+  tr.setAttribute('aria-expanded', 'true');
+
+  const inner = el('div', { class: 'detail-inner' }, [el('div', { class: 'sub', text: 'Details werden geladen…' })]);
+  tr.after(el('tr', { class: 'detail' }, [el('td', { colspan: '7' }, [inner])]));
+
+  try {
+    const res = await fetch(`/api/device?id=${encodeURIComponent(device.smartlock_id)}&days=${state.days}`);
+    const payload = await res.json();
+    if (!res.ok) throw new Error(payload.error);
+
+    const list = el('div', { class: 'events' });
+    if (!payload.events.length) list.appendChild(el('div', { class: 'sub', text: 'Keine Ereignisse im Zeitraum.' }));
+    payload.events.forEach((e) => {
+      const detail = Object.entries(e.detail || {}).map(([k, v]) => `${k}: ${v}`).join(', ');
+      list.appendChild(el('div', {}, [
+        el('time', { text: fmtTime(e.occurred_at) }),
+        el('span', { text: e.kind }),
+        detail ? el('div', { class: 'sub', text: detail }) : null
+      ]));
+    });
+
+    const t = payload.battery_trend;
+    const battery = t
+      ? `${t.from} % auf ${t.to} % in ${t.days} Tagen, also ${t.per_day} Prozentpunkte pro Tag.`
+      : 'Noch zu wenig Messpunkte für eine Aussage.';
+
+    inner.replaceChildren(el('div', { class: 'detail-grid' }, [
+      el('div', {}, [el('h2', { text: 'Ereignisse', style: 'margin-top:0' }), list]),
+      el('div', {}, [
+        el('h2', { text: 'Akkuverlauf', style: 'margin-top:0' }),
+        el('p', { class: 'lede', text: battery }),
+        el('h2', { text: 'Letzte Antwort von Nuki' }),
+        el('pre', { text: JSON.stringify(payload.device.last_payload, null, 2) })
+      ])
+    ]));
+  } catch (error) {
+    inner.replaceChildren(el('div', { class: 'notice error', text: error.message || 'Abruf fehlgeschlagen.' }));
+  }
+}
+
+function renderHours(data) {
+  const max = Math.max(...data.disconnects_by_hour, 1);
+  document.getElementById('hours').replaceChildren(...data.disconnects_by_hour.map((count, hour) => {
+    const bar = el('div', { class: count === max && count > 0 ? 'peak' : '',
+      title: `${String(hour).padStart(2, '0')}:00 — ${count} Abbrüche` });
+    bar.style.height = Math.max(1, (count / max) * 100) + '%';
+    return bar;
+  }));
+}
+
+function renderFooter(data) {
+  const p = data.poller || {};
+  const last = p.last ? `letzte Abfrage ${fmtTime(p.last.started_at)}` : 'noch keine Abfrage';
+  const versions = data.summary.firmware_versions.length ? ` · Firmware: ${data.summary.firmware_versions.join(', ')}` : '';
+  document.getElementById('footer').textContent =
+    `Nuki Web API, ${last}${versions}. Als online gilt serverState 0. Schraffierte Bereiche im Verlauf sind Messlücken, keine stabilen Phasen.`;
+}
+
+async function load() {
+  document.getElementById('messages').replaceChildren();
+  try {
+    const [overviewRes, changesRes, probesRes] = await Promise.all([
+      fetch(`/api/overview?days=${state.days}`),
+      fetch('/api/changes'),
+      fetch(`/api/probes?days=${state.days}`)
+    ]);
+
+    const data = await overviewRes.json();
+    if (!overviewRes.ok) throw new Error(data.error);
+    data.all_changes = (await changesRes.json()).changes || [];
+    state.data = data;
+
+    renderFigures(data);
+    renderSites(data);
+    renderRows(data);
+    renderHours(data);
+    renderProbes((await probesRes.json()).probes || []);
+    renderFooter(data);
+    renderCompare(data);
+
+    document.getElementById('stamp').textContent = 'Stand ' + fmtTime(data.generated_at);
+    document.getElementById('exportSummary').href = `/api/export/summary.csv?days=${state.days}`;
+    document.getElementById('exportOutages').href = `/api/export/outages.csv?days=${state.days}`;
+
+    (data.open_alerts || []).forEach((alert) => {
+      message(alert.scope === 'fleet'
+        ? `Offener Flächenalarm seit ${fmtTime(alert.opened_at)}: mehrere Schlösser gleichzeitig offline.`
+        : `Offener Alarm: ${alert.device_name || alert.smartlock_id} seit ${fmtTime(alert.opened_at)} offline.`, 'error');
+    });
+
+    if (data.poller?.recent_failures > 0) {
+      message(`${data.poller.recent_failures} der letzten 20 Abfragen sind fehlgeschlagen: ${data.poller.runs.find((r) => !r.ok)?.error || ''}`, 'error');
+    }
+    if ((data.coverage.coverage ?? 1) < 0.95) {
+      message(`Die Messung deckt nur ${((data.coverage.coverage) * 100).toFixed(1)} % des Zeitraums ab. In den Lücken kann es Ausfälle gegeben haben, die niemand gesehen hat.`, 'error');
+    }
+    if (data.summary.unassigned_devices > 0) {
+      message(`${data.summary.unassigned_devices} Schlösser sind keinem Standort zugeordnet. Ohne Zuordnung gibt es keinen Standortvergleich.`);
+    }
+    if (data.summary.clustered_disconnects > 0) {
+      message(`${data.summary.clustered_disconnects} Abbrüche fielen mit dem Abbruch eines anderen Schlosses zusammen. Wenn mehrere Standorte gleichzeitig wegbrechen, liegt die Ursache eher bei Nuki als an den einzelnen Routern.`);
+    }
+  } catch (error) {
+    document.getElementById('stamp').textContent = 'Fehler';
+    message(error.message || 'Die Daten konnten nicht geladen werden.', 'error');
+  }
+}
+
+document.getElementById('days').addEventListener('change', (e) => { state.days = Number(e.target.value); load(); });
+document.getElementById('pollnow').addEventListener('click', async (e) => {
+  e.target.disabled = true; e.target.textContent = 'fragt ab…';
+  await fetch('/api/poll', { method: 'POST' });
+  await load();
+  e.target.disabled = false; e.target.textContent = 'Jetzt abfragen';
+});
+
+load();
+setInterval(load, 120000);
+</script>
+</body>
+</html>

@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Standorte &amp; Änderungen</title>
+<style>
+  :root { --paper:#fff; --ink:#000; --rule:#e2e2e2; --muted:#6b6b6b; --quiet:#f5f5f5; --accent:#f6bb12; --alarm:#c8322b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; font-size:15px; line-height:1.5; }
+  .wrap { max-width:900px; margin:0 auto; padding:26px 20px 90px; }
+  header.top { display:flex; align-items:baseline; gap:16px; padding-bottom:16px; border-bottom:2px solid var(--ink); }
+  h1 { font-size:21px; font-weight:650; margin:0; }
+  h2 { font-size:15px; font-weight:650; margin:34px 0 4px; }
+  .lede { color:var(--muted); font-size:13px; margin:0 0 14px; max-width:70ch; }
+  a { color:inherit; }
+  input, select, button, textarea, .btn {
+    font:inherit; color:var(--ink); background:var(--paper); border:1px solid var(--ink);
+    padding:6px 9px; border-radius:0; text-decoration:none; display:inline-block;
+  }
+  button, .btn { cursor:pointer; }
+  button:hover, .btn:hover { background:var(--accent); }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline:3px solid var(--accent); outline-offset:1px; }
+  button.quiet { border-color:var(--rule); color:var(--muted); padding:3px 7px; font-size:13px; }
+  button.quiet:hover { background:var(--quiet); color:var(--alarm); }
+  form.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; align-items:end; margin-bottom:8px; }
+  label { display:block; font-size:12.5px; color:var(--muted); margin-bottom:3px; }
+  label input, label select { width:100%; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  th { text-align:left; font-size:12.5px; font-weight:550; color:var(--muted); padding:0 10px 7px 0; border-bottom:1px solid var(--ink); }
+  td { padding:9px 10px 9px 0; border-bottom:1px solid var(--rule); vertical-align:middle; }
+  .sub { color:var(--muted); font-size:12.5px; }
+  .notice { padding:12px 14px; border-left:3px solid var(--accent); background:var(--quiet); font-size:13.5px; margin:14px 0; }
+  .notice.error { border-left-color:var(--alarm); }
+  code { background:var(--quiet); padding:1px 5px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Standorte &amp; Änderungen</h1>
+    <a class="btn" href="/" style="margin-left:auto">Zurück zum Dashboard</a>
+  </header>
+
+  <div id="messages"></div>
+
+  <h2>Standort anlegen</h2>
+  <p class="lede">Ein Standort bündelt die Schlösser hinter demselben Router. Die Router-Merkmale sind eure Eingabe — sie machen im Dashboard sichtbar, ob etwa alle Standorte mit WPA2/WPA3-Mixed schlechter laufen. Ein bestehender Name wird aktualisiert statt doppelt angelegt.</p>
+  <form class="grid" id="siteForm">
+    <label>Name<input name="name" required placeholder="Villa Nord"></label>
+    <label>Router<input name="router_model" placeholder="Internet-Box 4"></label>
+    <label>WPA-Modus
+      <select name="wpa_mode">
+        <option value="">unbekannt</option>
+        <option>WPA2</option>
+        <option>WPA2/WPA3</option>
+        <option>WPA3</option>
+      </select>
+    </label>
+    <label>2,4-GHz-Kanal<input name="wifi_channel" placeholder="auto, 1, 6, 11"></label>
+    <label>Mesh / WLAN-Box
+      <select name="has_mesh"><option value="false">nein</option><option value="true">ja</option></select>
+    </label>
+    <button type="submit">Standort speichern</button>
+  </form>
+  <table><thead><tr><th>Standort</th><th>Router</th><th>WPA</th><th>Kanal</th><th>Mesh</th><th>Schlösser</th><th></th></tr></thead>
+  <tbody id="siteRows"></tbody></table>
+
+  <h2>Schlösser zuordnen</h2>
+  <p class="lede">Ohne Zuordnung kann das Dashboard weder Standorte vergleichen noch die Wirkung einer Änderung berechnen.</p>
+  <table><thead><tr><th>Schloss</th><th>Standort</th></tr></thead><tbody id="deviceRows"></tbody></table>
+
+  <h2>Änderung eintragen</h2>
+  <p class="lede">Jede Umstellung am Router gehört hier hinein. Das Dashboard vergleicht danach automatisch 72 Stunden davor mit 72 Stunden danach.</p>
+  <form class="grid" id="changeForm">
+    <label>Was wurde geändert<input name="title" required placeholder="WPA2/WPA3 auf WPA2"></label>
+    <label>Standort
+      <select name="site_id"><option value="">alle Standorte</option></select>
+    </label>
+    <label>Zeitpunkt<input name="applied_at" type="datetime-local" required></label>
+    <button type="submit">Änderung speichern</button>
+  </form>
+  <table><thead><tr><th>Änderung</th><th>Standort</th><th>Zeitpunkt</th><th></th></tr></thead>
+  <tbody id="changeRows"></tbody></table>
+
+  <h2>Alarme</h2>
+  <p class="lede">Alarme gehen an den Webhook aus <code>ALERT_WEBHOOK_URL</code>. Der Test schickt eine Nachricht mit <code>type: test</code>.</p>
+  <p><button id="testWebhook" type="button">Testalarm senden</button></p>
+  <table><thead><tr><th>Zeitpunkt</th><th>Art</th><th>Betrifft</th><th>Status</th></tr></thead>
+  <tbody id="alertRows"></tbody></table>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function message(text, kind = '') {
+  const box = $('messages');
+  const node = document.createElement('div');
+  node.className = 'notice ' + kind;
+  node.textContent = text;
+  box.replaceChildren(node);
+  setTimeout(() => node.remove(), 6000);
+}
+
+const fmtTime = (iso) => new Date(iso).toLocaleString('de-CH', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    ...options,
+    headers: options.body ? { 'Content-Type': 'application/json' } : undefined
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Fehlgeschlagen.');
+  return data;
+}
+
+function cell(text) {
+  const td = document.createElement('td');
+  td.textContent = text ?? '—';
+  return td;
+}
+
+async function loadAll() {
+  const [sitesData, overview, changesData, alertsData] = await Promise.all([
+    api('/api/sites'),
+    api('/api/overview?days=1'),
+    api('/api/changes'),
+    api('/api/alerts')
+  ]);
+
+  const sites = sitesData.sites;
+
+  $('siteRows').replaceChildren(...sites.map((site) => {
+    const tr = document.createElement('tr');
+    tr.append(
+      cell(site.name), cell(site.router_model), cell(site.wpa_mode),
+      cell(site.wifi_channel), cell(site.has_mesh ? 'ja' : 'nein'), cell(String(site.device_count))
+    );
+    const td = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.className = 'quiet';
+    btn.textContent = 'löschen';
+    btn.onclick = async () => {
+      if (!confirm(`Standort "${site.name}" löschen? Die Zuordnungen und eingetragenen Änderungen dieses Standorts verschwinden mit.`)) return;
+      await api('/api/sites?id=' + site.id, { method: 'DELETE' });
+      message('Standort gelöscht.');
+      loadAll();
+    };
+    td.appendChild(btn);
+    tr.appendChild(td);
+    return tr;
+  }));
+
+  $('deviceRows').replaceChildren(...overview.devices.map((device) => {
+    const tr = document.createElement('tr');
+    tr.appendChild(cell(device.name));
+    const td = document.createElement('td');
+    const select = document.createElement('select');
+    select.append(new Option('ohne Standort', ''));
+    sites.forEach((s) => select.append(new Option(s.name, s.id)));
+    select.value = device.site_id ? String(device.site_id) : '';
+    select.onchange = async () => {
+      await api('/api/assign', {
+        method: 'POST',
+        body: JSON.stringify({
+          smartlock_id: device.smartlock_id,
+          site_id: select.value ? Number(select.value) : null
+        })
+      });
+      message(`${device.name} zugeordnet.`);
+      loadAll();
+    };
+    td.appendChild(select);
+    tr.appendChild(td);
+    return tr;
+  }));
+
+  const siteSelect = $('changeForm').elements.site_id;
+  const current = siteSelect.value;
+  siteSelect.replaceChildren(new Option('alle Standorte', ''));
+  sites.forEach((s) => siteSelect.append(new Option(s.name, s.id)));
+  siteSelect.value = current;
+
+  $('changeRows').replaceChildren(...changesData.changes.map((change) => {
+    const tr = document.createElement('tr');
+    tr.append(cell(change.title), cell(change.site_name || 'alle'), cell(fmtTime(change.applied_at)));
+    const td = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.className = 'quiet';
+    btn.textContent = 'löschen';
+    btn.onclick = async () => {
+      await api('/api/changes?id=' + change.id, { method: 'DELETE' });
+      message('Änderung gelöscht.');
+      loadAll();
+    };
+    td.appendChild(btn);
+    tr.appendChild(td);
+    return tr;
+  }));
+
+  $('alertRows').replaceChildren(...alertsData.alerts.slice(0, 25).map((alert) => {
+    const tr = document.createElement('tr');
+    tr.append(
+      cell(fmtTime(alert.opened_at)),
+      cell(alert.kind),
+      cell(alert.device_name || (alert.scope === 'fleet' ? 'mehrere Schlösser' : alert.smartlock_id)),
+      cell(alert.closed_at ? 'beendet ' + fmtTime(alert.closed_at) : 'offen')
+    );
+    return tr;
+  }));
+}
+
+$('siteForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try {
+    await api('/api/sites', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: f.get('name'),
+        router_model: f.get('router_model'),
+        wpa_mode: f.get('wpa_mode'),
+        wifi_channel: f.get('wifi_channel'),
+        has_mesh: f.get('has_mesh') === 'true'
+      })
+    });
+    e.target.reset();
+    message('Standort gespeichert.');
+    loadAll();
+  } catch (error) { message(error.message, 'error'); }
+});
+
+$('changeForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try {
+    await api('/api/changes', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: f.get('title'),
+        site_id: f.get('site_id') ? Number(f.get('site_id')) : null,
+        applied_at: new Date(f.get('applied_at')).toISOString()
+      })
+    });
+    e.target.reset();
+    message('Änderung gespeichert. Der Vergleich erscheint im Dashboard, sobald genug Zeit vergangen ist.');
+    loadAll();
+  } catch (error) { message(error.message, 'error'); }
+});
+
+$('testWebhook').addEventListener('click', async () => {
+  try {
+    const result = await api('/api/alerts/test', { method: 'POST' });
+    message(result.skipped
+      ? 'Kein Webhook konfiguriert. Setze ALERT_WEBHOOK_URL in Railway.'
+      : result.ok ? 'Testalarm gesendet.' : `Webhook antwortete mit Status ${result.status || '—'}.`,
+      result.ok ? '' : 'error');
+  } catch (error) { message(error.message, 'error'); }
+});
+
+loadAll().catch((error) => message(error.message, 'error'));
+</script>
+</body>
+</html>
