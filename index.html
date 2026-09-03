@@ -186,7 +186,8 @@ function renderFigures(data) {
     { value: s.clustered_disconnects, label: 'standortübergreifend', flag: s.clustered_disconnects > 0 },
     { value: ((data.coverage.coverage ?? 0) * 100).toFixed(1) + ' %', label: 'Messabdeckung',
       flag: (data.coverage.coverage ?? 1) < 0.95 },
-    { value: s.battery_critical, label: 'Akku kritisch' }
+    { value: s.battery_critical, label: 'Akku kritisch' },
+    { value: s.needs_reconnect, label: 'Verbindung neu einrichten', flag: s.needs_reconnect > 0 }
   ];
   document.getElementById('figures').replaceChildren(...items.map((i) =>
     el('div', { class: 'figure' }, [
@@ -420,10 +421,14 @@ function renderHours(data) {
 
 function renderFooter(data) {
   const p = data.poller || {};
-  const last = p.last ? `letzte Abfrage ${fmtTime(p.last.started_at)}` : 'noch keine Abfrage';
+  const w = data.webhooks || {};
+  const last = p.last ? `letzter Abgleich ${fmtTime(p.last.started_at)}` : 'noch kein Abgleich';
+  const hooks = w.enabled
+    ? ` · Webhooks aktiv, ${w.total_24h} in 24 h, zuletzt ${w.last_received ? fmtTime(w.last_received) : 'nie'}`
+    : ' · Webhooks nicht konfiguriert, Messung läuft über Polling';
   const versions = data.summary.firmware_versions.length ? ` · Firmware: ${data.summary.firmware_versions.join(', ')}` : '';
   document.getElementById('footer').textContent =
-    `Nuki Web API, ${last}${versions}. Als online gilt serverState 0. Schraffierte Bereiche im Verlauf sind Messlücken, keine stabilen Phasen.`;
+    `Nuki Web API, ${last}${hooks}${versions}. Als offline gilt serverState 4; die Codes 1 bis 3 sind Konfigurationsprobleme und zählen nicht als Ausfall.`;
 }
 
 async function load() {
@@ -463,6 +468,18 @@ async function load() {
     }
     if ((data.coverage.coverage ?? 1) < 0.95) {
       message(`Die Messung deckt nur ${((data.coverage.coverage) * 100).toFixed(1)} % des Zeitraums ab. In den Lücken kann es Ausfälle gegeben haben, die niemand gesehen hat.`, 'error');
+    }
+    if (data.webhooks?.enabled && data.webhooks.last_received) {
+      const minutes = (Date.now() - new Date(data.webhooks.last_received)) / 60000;
+      if (minutes > 60 * 25) {
+        message('Seit über 25 Stunden kam kein Webhook an. Nuki synchronisiert spätestens alle 24 Stunden, es müsste also längst einer da sein. Prüfe die Webhook-Logs in Nuki Web.', 'error');
+      }
+    }
+    if (data.webhooks?.signature_failures_24h > 0) {
+      message(`${data.webhooks.signature_failures_24h} Webhooks wurden wegen ungültiger Signatur abgewiesen. Stimmt NUKI_WEBHOOK_SECRET mit dem Secret aus der Registrierung überein?`, 'error');
+    }
+    if (data.summary.needs_reconnect > 0) {
+      message(`${data.summary.needs_reconnect} Schlösser melden ein Autorisierungsproblem (serverState 1 bis 3). Das ist kein WLAN-Ausfall: die Verbindung zum Nuki-Web-Konto muss neu hergestellt werden.`, 'error');
     }
     if (data.summary.unassigned_devices > 0) {
       message(`${data.summary.unassigned_devices} Schlösser sind keinem Standort zugeordnet. Ohne Zuordnung gibt es keinen Standortvergleich.`);

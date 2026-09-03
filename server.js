@@ -7,6 +7,7 @@ import * as db from './src/db.js';
 import { buildOverview, compareWindows, batteryTrend } from './src/analysis.js';
 import { startPolling, pollOnce } from './src/poller.js';
 import { notify } from './src/alerts.js';
+import { verifySignature, handleWebhook, webhookHealth, webhooksEnabled, recordSignatureFailure } from './src/webhook.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -46,6 +47,12 @@ function authorized(req) {
   return user === (DASHBOARD_USER || user) && pass === DASHBOARD_PASSWORD;
 }
 
+async function readRawBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -76,13 +83,56 @@ async function overview(days) {
   const data = buildOverview({ devices, events, priorState, pollRuns, from, to, changes });
   data.poller = health;
   data.open_alerts = (await db.listAlerts(50)).filter((a) => !a.closed_at);
+  data.webhooks = await webhookHealth();
   return data;
+}
+
+async function evaluateAlertsSafely(devices) {
+  try {
+    const { evaluateAlerts } = await import('./src/alerts.js');
+    await evaluateAlerts(devices);
+  } catch (error) {
+    console.error('[alerts]', error.message);
+  }
 }
 
 export const app = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (url.pathname === '/healthz') return sendJson(res, 200, { ok: true });
+
+  // Nuki authentifiziert sich ueber die HMAC-Signatur, nicht ueber Basic Auth.
+  // Diese Route muss immer schnell mit 200 antworten: Nuki warnt ab 5 Prozent
+  // Fehlerrate und stellt die Zustellung bei dauerhaften Fehlern ganz ein.
+  if (url.pathname === '/api/nuki/webhook' && req.method === 'POST') {
+    try {
+      const raw = await readRawBody(req);
+      if (!verifySignature(raw, req.headers['x-nuki-signature-sha256'])) {
+        await recordSignatureFailure().catch(() => {});
+        return sendJson(res, 401, { error: 'Signatur ungueltig.' });
+      }
+
+      let payload;
+      try {
+        payload = JSON.parse(raw.toString('utf8'));
+      } catch {
+        return sendJson(res, 200, { ignored: 'kein gueltiges JSON' });
+      }
+
+      // Sofort bestaetigen, danach verarbeiten.
+      sendJson(res, 200, { received: true });
+      handleWebhook(payload)
+        .then(async () => {
+          const devices = await db.listDevices();
+          await evaluateAlertsSafely(devices);
+        })
+        .catch((error) => console.error('[webhook]', error.message));
+      return;
+    } catch (error) {
+      console.error('[webhook]', error.message);
+      return sendJson(res, 200, { received: false });
+    }
+  }
 
   // Die Sonde authentifiziert sich mit einem eigenen Token, nicht ueber Basic Auth.
   if (url.pathname === '/api/probe' && req.method === 'POST') {
@@ -279,7 +329,9 @@ export const app = http.createServer(async (req, res) => {
       return sendJson(res, result.ok ? 200 : 502, result);
     }
 
-    if (url.pathname === '/api/health') return sendJson(res, 200, await db.pollHealth());
+    if (url.pathname === '/api/health') {
+      return sendJson(res, 200, { poller: await db.pollHealth(), webhooks: await webhookHealth() });
+    }
 
     sendJson(res, 404, { error: 'Nicht gefunden.' });
   } catch (error) {
@@ -292,6 +344,9 @@ if (process.env.NODE_ENV !== 'test') {
   db.migrate()
     .then(() => {
       app.listen(PORT, () => console.log(`Nuki Monitor laeuft auf Port ${PORT}`));
+      if (webhooksEnabled()) {
+        console.log('Webhooks aktiv. Der Poll laeuft nur noch als Abgleich.');
+      }
       startPolling();
     })
     .catch((error) => {

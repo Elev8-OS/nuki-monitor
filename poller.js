@@ -1,8 +1,17 @@
-import { fetchSmartlocks, mapSmartlock, decodeFirmware } from './nuki.js';
+import { fetchSmartlocks, mapSmartlock, decodeFirmware, classifyServerState } from './nuki.js';
 import { query, cleanup, listDevices } from './db.js';
 import { evaluateAlerts } from './alerts.js';
+import { webhooksEnabled } from './webhook.js';
 
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_SECONDS || 60) * 1000;
+/**
+ * Nuki empfiehlt ausdruecklich, Webhooks statt Polling zu verwenden, und rät
+ * davon ab, zusaetzlich "als Fallback" zu pollen. Sind Webhooks aktiv, laeuft
+ * der Poll deshalb nur noch als seltener Abgleich, damit ein verpasster
+ * Webhook nicht unbemerkt bleibt.
+ */
+const POLL_INTERVAL_MS = webhooksEnabled()
+  ? Number(process.env.RECONCILE_INTERVAL_SECONDS || 900) * 1000
+  : Number(process.env.POLL_INTERVAL_SECONDS || 60) * 1000;
 const SAMPLE_INTERVAL_MS = Number(process.env.SAMPLE_INTERVAL_MINUTES || 15) * 60 * 1000;
 const SAMPLE_RETENTION_DAYS = Number(process.env.SAMPLE_RETENTION_DAYS || 90);
 const EVENT_RETENTION_DAYS = Number(process.env.EVENT_RETENTION_DAYS || 365);
@@ -23,8 +32,8 @@ async function upsertDevice(device, changed, offlineSince) {
     `insert into devices (
        smartlock_id, name, device_type, firmware_version, hardware_version, server_state, online, offline_since,
        battery_charge, battery_critical, battery_charging, lock_state, door_sensor_state,
-       last_payload, last_polled_at, last_change_at
-     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now(), case when $15 then now() else null end)
+       last_payload, needs_reconnect, last_polled_at, last_change_at
+     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$16, now(), case when $15 then now() else null end)
      on conflict (smartlock_id) do update set
        name = excluded.name,
        device_type = excluded.device_type,
@@ -39,6 +48,7 @@ async function upsertDevice(device, changed, offlineSince) {
        lock_state = excluded.lock_state,
        door_sensor_state = excluded.door_sensor_state,
        last_payload = excluded.last_payload,
+       needs_reconnect = excluded.needs_reconnect,
        last_polled_at = now(),
        last_change_at = case when $15 then now() else devices.last_change_at end`,
     [
@@ -56,7 +66,8 @@ async function upsertDevice(device, changed, offlineSince) {
       device.lock_state,
       device.door_sensor_state,
       JSON.stringify(device.payload),
-      changed
+      changed,
+      device.needs_reconnect
     ]
   );
 }
@@ -79,18 +90,24 @@ export async function reconcile(device, previous) {
       'device_added',
       {
         online: device.online,
+        server_state: device.server_state,
         firmware: decodeFirmware(device.firmware_version),
         firmware_raw: device.firmware_version
       }
     ]);
     offlineSince = device.online ? null : new Date();
   } else {
-    if (previous.online !== device.online) {
-      events.push([
-        device.online ? 'online' : 'offline',
-        { server_state: device.server_state, previous_server_state: previous.server_state }
-      ]);
-      offlineSince = device.online ? null : new Date();
+    const status = classifyServerState(device.server_state);
+    const statusChanged =
+      previous.online !== device.online || previous.needs_reconnect !== device.needs_reconnect;
+
+    if (statusChanged) {
+      // Nur serverState 4 ist ein echter Verbindungsausfall. Die Codes 1 bis 3
+      // sind Konfigurationsprobleme und werden getrennt gefuehrt, damit sie die
+      // Ausfallstatistik nicht verfaelschen.
+      const kind = status === 'connection_broken' ? 'connection_broken' : device.online ? 'online' : 'offline';
+      events.push([kind, { server_state: device.server_state, previous_server_state: previous.server_state }]);
+      offlineSince = device.online ? null : previous.offline_since || new Date();
     }
 
     if (previous.firmware_version !== device.firmware_version) {

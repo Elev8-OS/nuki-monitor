@@ -2,7 +2,9 @@
 
 Fragt die Nuki Web API im Minutentakt ab, schreibt jeden Zustandswechsel nach Postgres, alarmiert über einen Webhook und rechnet aus, ob eine Router-Umstellung tatsächlich etwas gebracht hat.
 
-Der Unterschied zu Nuki Web und zu Seam: Nuki liefert nur den Zustand von jetzt, Seam pollt alle zehn Minuten. Diese App pollt jede Minute, behält die Historie und kennt euren Kontext — welches Schloss an welchem Router hängt und wann ihr dort was geändert habt.
+Mit Nuki Advanced API Access empfängt die App Webhooks und erfährt Zustandsänderungen in Sekunden statt Minuten. Ohne Advanced Access fällt sie automatisch auf Polling im Minutentakt zurück.
+
+Der Unterschied zu Nuki Web und zu Seam: Nuki liefert nur den Zustand von jetzt, Seam pollt alle zehn Minuten. Diese App behält die Historie und kennt euren Kontext — welches Schloss an welchem Router hängt und wann ihr dort was geändert habt.
 
 ---
 
@@ -34,6 +36,49 @@ npm install
 NUKI_API_TOKEN=... DATABASE_URL=postgres://... npm start
 npm test    # läuft ohne echte API und ohne externen Postgres
 ```
+
+---
+
+## Webhooks einrichten
+
+Ohne diesen Abschnitt läuft alles über Polling. Mit Advanced API Access geht es deutlich besser.
+
+**1. OAuth-Zugang holen.** Unter https://web.nuki.io/#/pages/web-api findet ihr in der Advanced-Integration eure Client ID, das Client Secret und die Redirect URI.
+
+**2. Access Token mit dem richtigen Scope holen.** Der API-Token aus Nuki Web reicht hier **nicht** — für dezentrale Webhooks braucht es einen OAuth-Token mit dem Scope `webhook.decentral`. Zuerst im Browser öffnen:
+
+```
+https://api.nuki.io/oauth/authorize?response_type=code
+  &scope=smartlock%20smartlock.auth%20account%20webhook.decentral
+  &client_id=EURE_CLIENT_ID
+  &redirect_uri=EURE_REDIRECT_URI
+```
+
+Nach der Bestätigung hängt an der Redirect URI ein `code`. Den tauscht ihr gegen einen Token:
+
+```bash
+curl -X POST "https://api.nuki.io/oauth/token?grant_type=authorization_code&code=DER_CODE&redirect_uri=EURE_REDIRECT_URI&scope=smartlock+smartlock.auth+account+webhook.decentral" \
+  -H "Content-Type: application/x-www-form-urlencoded;charset=UTF-8" \
+  -u "CLIENT_ID:CLIENT_SECRET"
+```
+
+**3. Webhook registrieren.**
+
+```bash
+node scripts/webhook.mjs create \
+  --token ACCESS_TOKEN \
+  --url https://euer-monitor.up.railway.app/api/nuki/webhook
+```
+
+Das Skript registriert die Features `DEVICE_STATUS`, `DEVICE_MASTERDATA` und `DEVICE_LOGS` — mehr wertet die App nicht aus, und Nuki empfiehlt ausdrücklich, ungenutzte Features abzuschalten. Die Antwort enthält ein `secret`.
+
+**4. Secret hinterlegen.** Das `secret` in Railway als `NUKI_WEBHOOK_SECRET` eintragen. Nuki signiert jeden Aufruf per HMAC-SHA256 im Header `X-Nuki-Signature-SHA256`; ohne passendes Secret weist die App alles ab. Nach dem Setzen startet Railway neu, im Log steht dann „Webhooks aktiv".
+
+**5. Prüfen.** Sperrt ein Schloss über die App. Innerhalb von Sekunden muss im Dashboard ein Ereignis erscheinen. In der Fusszeile steht, wie viele Webhooks in 24 Stunden ankamen.
+
+Verwalten: `node scripts/webhook.mjs list --token …` und `delete --id …`.
+
+**Wichtig zum Betrieb:** Nuki schickt eine Warnung an die im Antrag hinterlegte E-Mail, wenn die Fehlerrate 5 Prozent übersteigt, und kann die Zustellung bei dauerhaften Fehlern ganz einstellen. Die App antwortet deshalb immer sofort mit 200 und verarbeitet danach. Die Zustell-Logs seht ihr auch in Nuki Web, dort sind die letzten 300 Nachrichten gespeichert.
 
 ---
 
@@ -97,11 +142,21 @@ Für zwei oder drei Referenzstandorte lohnt sich das. Für alle wäre es unverh�
 
 ---
 
-## Zwei Annahmen, die ihr beim ersten Lauf prüfen solltet
+## Zustandscodes
 
-**Online-Erkennung.** Die App wertet `serverState === 0` als online. Nuki dokumentiert weitere Codes, deren genaue Bedeutung ich nicht verifizieren konnte. Der Rohwert steht im Tooltip des Statuspunkts. Schaut beim ersten echten Ausfall nach, welcher Code auftaucht.
+Aus der Nuki-Dokumentation, nicht geraten:
 
-**Firmware-Dekodierung.** Nuki liefert die Firmware als Ganzzahl; die App rechnet `major * 65536 + minor * 256 + patch`, aus 329988 wird 5.9.4. Weicht das von der Nuki App ab, ist die Kodierung anders. Der Rohwert wird immer mitgespeichert.
+| serverState | Bedeutung | Wie die App es wertet |
+|---|---|---|
+| 0 | ok | online |
+| 1 | nicht registriert | Konfigurationsproblem |
+| 2 | Auth-UUID ungültig | Konfigurationsproblem |
+| 3 | Autorisierung ungültig | Konfigurationsproblem |
+| 4 | offline | echter Ausfall, zählt in die Statistik |
+
+Der Unterschied ist wichtig: Bei 1 bis 3 muss die Verbindung des Geräts zum Nuki-Web-Konto neu hergestellt werden. Das ist kein WLAN-Problem und würde eure Ausfallstatistik verfälschen, wenn man es mitzählt. Solche Fälle erscheinen als eigene Kennzahl „Verbindung neu einrichten".
+
+Die Firmware liefert Nuki als Ganzzahl, die als HEX zu lesen ist: 133135 ergibt 0x2080F und damit Version 2.8.15. Nach derselben Rechnung ist 329988 die Version 5.9.4.
 
 ---
 

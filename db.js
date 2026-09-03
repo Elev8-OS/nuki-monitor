@@ -127,6 +127,20 @@ create table if not exists probe_samples (
   raw         jsonb not null default '{}'::jsonb
 );
 create index if not exists probe_time_idx on probe_samples (site_id, received_at desc);
+
+create table if not exists webhook_deliveries (
+  id          bigserial primary key,
+  received_at timestamptz not null default now(),
+  feature     text,
+  ok          boolean not null,
+  error       text
+);
+create index if not exists webhook_time_idx on webhook_deliveries (received_at desc);
+
+-- Nachtraegliche Spalten fuer bereits laufende Installationen.
+alter table devices add column if not exists needs_reconnect boolean not null default false;
+alter table devices add column if not exists admin_pin_state integer;
+alter table events  add column if not exists source text not null default 'poll';
 `;
 
 export async function migrate() {
@@ -149,13 +163,13 @@ export async function listDevices() {
 export async function eventsSince(from, kinds = null) {
   if (kinds) {
     const { rows } = await query(
-      'select smartlock_id, occurred_at, kind, detail from events where occurred_at >= $1 and kind = any($2) order by occurred_at asc',
+      'select smartlock_id, occurred_at, kind, detail, source from events where occurred_at >= $1 and kind = any($2) order by occurred_at asc',
       [from, kinds]
     );
     return rows;
   }
   const { rows } = await query(
-    'select smartlock_id, occurred_at, kind, detail from events where occurred_at >= $1 order by occurred_at asc',
+    'select smartlock_id, occurred_at, kind, detail, source from events where occurred_at >= $1 order by occurred_at asc',
     [from]
   );
   return rows;
@@ -191,7 +205,7 @@ export async function deviceDetail(smartlockId, from) {
       [smartlockId]
     ),
     query(
-      'select occurred_at, kind, detail from events where smartlock_id = $1 and occurred_at >= $2 order by occurred_at desc limit 500',
+      'select occurred_at, kind, detail, source from events where smartlock_id = $1 and occurred_at >= $2 order by occurred_at desc limit 500',
       [smartlockId, from]
     ),
     query(
@@ -394,5 +408,6 @@ export async function cleanup(sampleDays, eventDays) {
   await query(`delete from events where occurred_at < now() - ($1 || ' days')::interval`, [String(eventDays)]);
   await query(`delete from probe_samples where received_at < now() - ($1 || ' days')::interval`, [String(sampleDays)]);
   await query("delete from poll_runs where started_at < now() - interval '30 days'");
+  await query("delete from webhook_deliveries where received_at < now() - interval '30 days'");
   await query("delete from alerts where closed_at is not null and closed_at < now() - interval '90 days'");
 }

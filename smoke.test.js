@@ -13,6 +13,7 @@ process.env.SAMPLE_INTERVAL_MINUTES = '0';
 process.env.ALERT_AFTER_MINUTES = '0';
 process.env.FLEET_ALERT_THRESHOLD = '2';
 process.env.POLL_INTERVAL_SECONDS = '60';
+process.env.NUKI_WEBHOOK_SECRET = 'webhookgeheim';
 
 // --- Nuki-Mock ---------------------------------------------------------
 let fleet = [
@@ -247,6 +248,88 @@ const failed = await alerts.notify({ type: 'test' });
 assert.equal(failed.ok, false);
 assert.equal((await pollOnce()).ok, true);
 console.log('✓ Kaputter Webhook stoppt das Polling nicht');
+
+// --- Webhooks ----------------------------------------------------------
+const crypto = await import('node:crypto');
+const { verifySignature } = await import('../src/webhook.js');
+
+const sign = (body) => crypto.createHmac('sha256', 'webhookgeheim').update(body).digest('hex');
+const postHook = (payload, signature) => {
+  const body = JSON.stringify(payload);
+  return api('/api/nuki/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Nuki-Signature-SHA256': signature ?? sign(body) },
+    body
+  });
+};
+
+assert.equal(verifySignature(Buffer.from('abc'), sign('abc')), true);
+assert.equal(verifySignature(Buffer.from('abc'), sign('xyz')), false);
+assert.equal(verifySignature(Buffer.from('abc'), undefined), false);
+assert.equal(verifySignature(Buffer.from('abc'), 'kurz'), false);
+console.log('✓ Signaturpruefung akzeptiert nur korrekte HMACs');
+
+const rejected = await postHook({ feature: 'DEVICE_STATUS', smartlockId: 111, serverState: 4 }, 'falsch');
+assert.equal(rejected.status, 401);
+console.log('✓ Falsch signierter Webhook wird abgewiesen');
+
+// serverState 4 = echter Ausfall
+const beforeOffline = (await db.eventsSince(new Date(Date.now() - 3600e3), ['offline'])).length;
+let hook = await postHook({ feature: 'DEVICE_STATUS', smartlockId: 111, serverState: 4, state: { state: 1, batteryCharge: 80 } });
+assert.equal(hook.status, 200);
+await new Promise((r) => setTimeout(r, 200));
+const afterOffline = (await db.eventsSince(new Date(Date.now() - 3600e3), ['offline'])).length;
+assert.equal(afterOffline, beforeOffline + 1, 'offline-Ereignis aus Webhook fehlt');
+const src = (await db.eventsSince(new Date(Date.now() - 3600e3), ['offline'])).at(-1).source;
+assert.equal(src, 'webhook');
+console.log('✓ serverState 4 aus dem Webhook erzeugt ein offline-Ereignis mit Quelle webhook');
+
+// serverState 2 = Konfigurationsproblem, KEIN Ausfall
+await postHook({ feature: 'DEVICE_STATUS', smartlockId: 222, serverState: 2, state: { state: 3 } });
+await new Promise((r) => setTimeout(r, 200));
+const broken = await db.eventsSince(new Date(Date.now() - 3600e3), ['connection_broken']);
+assert.equal(broken.length, 1, 'connection_broken fehlt');
+const stillNoExtraOffline = await db.eventsSince(new Date(Date.now() - 3600e3), ['offline']);
+assert.equal(stillNoExtraOffline.length, afterOffline, 'serverState 2 wurde faelschlich als Ausfall gezaehlt');
+console.log('✓ serverState 2 zaehlt als Konfigurationsproblem, nicht als Ausfall');
+
+// Firmware ueber MASTERDATA
+await postHook({ feature: 'DEVICE_MASTERDATA', smartlockId: 111, firmwareVersion: 133135, name: 'Villa Nord' });
+await new Promise((r) => setTimeout(r, 200));
+const fwEvents = await db.eventsSince(new Date(Date.now() - 3600e3), ['firmware_changed']);
+const last = fwEvents.at(-1);
+assert.equal(last.detail.to, '2.8.15', 'Firmware-Dekodierung stimmt nicht mit dem Beispiel aus der Nuki-Doku ueberein');
+console.log('✓ Firmware 133135 wird zu 2.8.15 dekodiert, wie im Nuki-Beispiel');
+
+// Aktivitaetsprotokoll
+await postHook({ feature: 'DEVICE_LOGS', smartlockLog: { smartlockId: 111, action: 1, trigger: 255, state: 0, name: 'Keypad Gast' } });
+await new Promise((r) => setTimeout(r, 200));
+const activity = await db.eventsSince(new Date(Date.now() - 3600e3), ['activity']);
+assert.equal(activity.length, 1);
+assert.equal(activity[0].detail.trigger, 255);
+console.log('✓ Aktivitaetsprotokoll aus dem Webhook wird gespeichert');
+
+// Unbekanntes Feature geht nicht verloren
+await postHook({ feature: 'DEVICE_CONFIG', smartlockId: 111, config: { name: 'x' } });
+await new Promise((r) => setTimeout(r, 200));
+assert.equal((await db.eventsSince(new Date(Date.now() - 3600e3), ['webhook_other'])).length, 1);
+console.log('✓ Unbekanntes Feature wird protokolliert statt verworfen');
+
+// Kaputtes JSON darf keine 500 erzeugen: Nuki stellt bei Fehlerraten die Zustellung ein
+const brokenBody = '{nicht json';
+const brokenRes = await api('/api/nuki/webhook', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Nuki-Signature-SHA256': sign(brokenBody) },
+  body: brokenBody
+});
+assert.equal(brokenRes.status, 200, 'kaputtes JSON muss trotzdem 200 liefern');
+console.log('✓ Kaputter Payload liefert 200, damit Nuki die Zustellung nicht abschaltet');
+
+const health = await api('/api/health');
+assert.equal(health.body.webhooks.enabled, true);
+assert.ok(health.body.webhooks.total_24h > 0);
+assert.ok(health.body.webhooks.signature_failures_24h >= 1);
+console.log('✓ Webhook-Zustand wird protokolliert und ist abrufbar');
 
 nukiMock.close();
 hookMock.close();
