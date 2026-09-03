@@ -1,0 +1,19 @@
+{
+  "name": "nuki-web-monitor",
+  "version": "3.0.0",
+  "description": "Verfuegbarkeits-Monitoring fuer Nuki Smart Locks ueber die Nuki Web API",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.test.js"
+  },
+  "engines": {
+    "node": ">=20 <23"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

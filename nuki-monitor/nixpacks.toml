@@ -1,0 +1,13 @@
+# Erzwingt den Node-Weg. Ohne diese Datei kann Railway den Ordner als
+# statische Seite erkennen und public/index.html ausliefern - dann laeuft
+# der Server nie, es gibt keine Anmeldung und jeder /api-Pfad ergibt 404.
+providers = ["node"]
+
+[phases.setup]
+nixPkgs = ["nodejs_20"]
+
+[phases.install]
+cmds = ["npm ci --omit=dev || npm install --omit=dev"]
+
+[start]
+cmd = "node server.js"
