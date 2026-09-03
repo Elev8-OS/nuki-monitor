@@ -84,6 +84,10 @@
   <table><thead><tr><th>Änderung</th><th>Standort</th><th>Zeitpunkt</th><th></th></tr></thead>
   <tbody id="changeRows"></tbody></table>
 
+  <h2>Nuki Webhooks</h2>
+  <p class="lede">Mit Advanced API Access meldet Nuki jede Zustandsänderung sofort, statt dass die App jede Minute nachfragt. Ein Klick genügt: du bestätigst bei Nuki, der Rest passiert automatisch.</p>
+  <div id="webhookBox"></div>
+
   <h2>Alarme</h2>
   <p class="lede">Alarme gehen an den Webhook aus <code>ALERT_WEBHOOK_URL</code>. Der Test schickt eine Nachricht mit <code>type: test</code>.</p>
   <p><button id="testWebhook" type="button">Testalarm senden</button></p>
@@ -121,13 +125,41 @@ function cell(text) {
   return td;
 }
 
+function renderWebhookBox(status) {
+  const box = $('webhookBox');
+  const parts = [];
+
+  if (status.oauth_problem) {
+    parts.push(`<div class="notice error">${status.oauth_problem} Setze in Railway NUKI_CLIENT_ID, NUKI_CLIENT_SECRET und PUBLIC_URL.</div>`);
+  }
+
+  if (status.registration?.registered_at) {
+    parts.push(`<div class="notice">Eingerichtet am ${fmtTime(status.registration.registered_at)}, Ziel <code>${status.registration.url || ''}</code>, ID <code>${status.registration.id || '—'}</code>.</div>`);
+  }
+
+  const h = status.health || {};
+  if (h.enabled) {
+    parts.push(`<p>In den letzten 24 Stunden: ${h.total_24h} Webhooks, davon ${h.failures_24h} mit Fehler und ${h.signature_failures_24h} mit ungültiger Signatur. Zuletzt: ${h.last_received ? fmtTime(h.last_received) : 'noch keiner'}.</p>`);
+  } else {
+    parts.push('<p>Webhooks sind noch nicht aktiv. Die Messung läuft solange über Polling im Minutentakt.</p>');
+  }
+
+  parts.push(`<p class="sub">Trage bei Nuki als Redirect URI genau <code>${status.redirect_uri}</code> ein, bevor du verbindest.</p>`);
+  parts.push(`<p><a class="btn" href="/oauth/start">${h.enabled ? 'Neu verbinden' : 'Mit Nuki verbinden'}</a></p>`);
+
+  box.innerHTML = parts.join('');
+}
+
 async function loadAll() {
-  const [sitesData, overview, changesData, alertsData] = await Promise.all([
+  const [sitesData, overview, changesData, alertsData, webhookStatus] = await Promise.all([
     api('/api/sites'),
     api('/api/overview?days=1'),
     api('/api/changes'),
-    api('/api/alerts')
+    api('/api/alerts'),
+    api('/api/webhook-status')
   ]);
+
+  renderWebhookBox(webhookStatus);
 
   const sites = sitesData.sites;
 

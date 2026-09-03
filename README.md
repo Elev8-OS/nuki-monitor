@@ -24,6 +24,7 @@ Der Unterschied zu Nuki Web und zu Seam: Nuki liefert nur den Zustand von jetzt,
    | `ALERT_WEBHOOK_SECRET` | frei wählen, kommt als Header mit |
    | `PUBLIC_URL` | die Railway-Domain, erscheint in jedem Alarm |
    | `PROBE_TOKEN` | nur nötig, wenn ihr Sonden vor Ort einsetzt |
+   | `NUKI_CLIENT_ID` / `NUKI_CLIENT_SECRET` | nur mit Advanced API Access, siehe Webhooks |
 
 5. **Settings → Networking → Generate Domain**, Seite öffnen.
 
@@ -41,44 +42,29 @@ npm test    # läuft ohne echte API und ohne externen Postgres
 
 ## Webhooks einrichten
 
-Ohne diesen Abschnitt läuft alles über Polling. Mit Advanced API Access geht es deutlich besser.
+Ohne diesen Abschnitt läuft alles über Polling im Minutentakt. Mit Advanced API Access kommen Ereignisse in Sekunden.
 
-**1. OAuth-Zugang holen.** Unter https://web.nuki.io/#/pages/web-api findet ihr in der Advanced-Integration eure Client ID, das Client Secret und die Redirect URI.
-
-**2. Access Token mit dem richtigen Scope holen.** Der API-Token aus Nuki Web reicht hier **nicht** — für dezentrale Webhooks braucht es einen OAuth-Token mit dem Scope `webhook.decentral`. Zuerst im Browser öffnen:
+**1. Redirect URI bei Nuki hinterlegen.** Unter https://web.nuki.io/#/pages/web-api im Bereich Advanced API eintragen:
 
 ```
-https://api.nuki.io/oauth/authorize?response_type=code
-  &scope=smartlock%20smartlock.auth%20account%20webhook.decentral
-  &client_id=EURE_CLIENT_ID
-  &redirect_uri=EURE_REDIRECT_URI
+https://EURE-DOMAIN/oauth/callback
 ```
 
-Nach der Bestätigung hängt an der Redirect URI ein `code`. Den tauscht ihr gegen einen Token:
+Das ist ein Feld, das ihr selbst ausfüllt — Nuki gibt euch nur Client ID und Client Secret.
 
-```bash
-curl -X POST "https://api.nuki.io/oauth/token?grant_type=authorization_code&code=DER_CODE&redirect_uri=EURE_REDIRECT_URI&scope=smartlock+smartlock.auth+account+webhook.decentral" \
-  -H "Content-Type: application/x-www-form-urlencoded;charset=UTF-8" \
-  -u "CLIENT_ID:CLIENT_SECRET"
-```
+**2. In Railway setzen:** `NUKI_CLIENT_ID`, `NUKI_CLIENT_SECRET` und `PUBLIC_URL` (die Domain ohne Schrägstrich am Ende). Die Redirect URI baut die App daraus selbst, sie muss also exakt zu dem passen, was ihr bei Nuki eingetragen habt.
 
-**3. Webhook registrieren.**
+**3. Verbinden.** Im Monitor auf *Standorte & Änderungen* gehen, Abschnitt Nuki Webhooks, dann *Mit Nuki verbinden*. Ihr landet bei Nuki, bestätigt den Zugriff, und die App holt sich den Token, registriert den Webhook und legt das Secret in der Datenbank ab. Kein curl, kein Kopieren von Secrets.
 
-```bash
-node scripts/webhook.mjs create \
-  --token ACCESS_TOKEN \
-  --url https://euer-monitor.up.railway.app/api/nuki/webhook
-```
+**4. Prüfen.** Sperrt ein Schloss über die Nuki App. Innerhalb von Sekunden muss im Dashboard ein Ereignis erscheinen. Im Abschnitt Nuki Webhooks steht, wie viele Aufrufe in 24 Stunden ankamen und ob welche wegen ungültiger Signatur abgewiesen wurden.
 
-Das Skript registriert die Features `DEVICE_STATUS`, `DEVICE_MASTERDATA` und `DEVICE_LOGS` — mehr wertet die App nicht aus, und Nuki empfiehlt ausdrücklich, ungenutzte Features abzuschalten. Die Antwort enthält ein `secret`.
+Registriert werden nur die Features `DEVICE_STATUS`, `DEVICE_MASTERDATA` und `DEVICE_LOGS` — mehr wertet die App nicht aus, und Nuki empfiehlt, ungenutzte Features abzuschalten.
 
-**4. Secret hinterlegen.** Das `secret` in Railway als `NUKI_WEBHOOK_SECRET` eintragen. Nuki signiert jeden Aufruf per HMAC-SHA256 im Header `X-Nuki-Signature-SHA256`; ohne passendes Secret weist die App alles ab. Nach dem Setzen startet Railway neu, im Log steht dann „Webhooks aktiv".
+**Falls ihr es lieber von Hand macht**, liegt `scripts/webhook.mjs` bei: `list`, `create --url …` und `delete --id …`, jeweils mit einem OAuth-Token, das den Scope `webhook.decentral` trägt. Das dabei zurückgegebene `secret` gehört dann als `NUKI_WEBHOOK_SECRET` nach Railway.
 
-**5. Prüfen.** Sperrt ein Schloss über die App. Innerhalb von Sekunden muss im Dashboard ein Ereignis erscheinen. In der Fusszeile steht, wie viele Webhooks in 24 Stunden ankamen.
+**Wichtig zum Betrieb:** Nuki warnt per E-Mail, sobald die Fehlerrate 5 Prozent übersteigt, und kann die Zustellung bei dauerhaften Fehlern ganz einstellen. Die App antwortet deshalb immer sofort mit 200 und verarbeitet erst danach. Die Zustell-Logs seht ihr auch in Nuki Web, dort sind die letzten 300 Nachrichten gespeichert.
 
-Verwalten: `node scripts/webhook.mjs list --token …` und `delete --id …`.
-
-**Wichtig zum Betrieb:** Nuki schickt eine Warnung an die im Antrag hinterlegte E-Mail, wenn die Fehlerrate 5 Prozent übersteigt, und kann die Zustellung bei dauerhaften Fehlern ganz einstellen. Die App antwortet deshalb immer sofort mit 200 und verarbeitet danach. Die Zustell-Logs seht ihr auch in Nuki Web, dort sind die letzten 300 Nachrichten gespeichert.
+**Sobald Webhooks aktiv sind**, schaltet die App das Polling selbstständig auf einen Abgleich alle 15 Minuten herunter. Nuki rät ausdrücklich davon ab, parallel zu Webhooks weiterzupollen.
 
 ---
 
@@ -179,7 +165,10 @@ Die Firmware liefert Nuki als Ganzzahl, die als HEX zu lesen ist: 133135 ergibt 
 | `POST /api/assign` | Schloss einem Standort zuordnen |
 | `GET POST DELETE /api/changes` | Änderungen verwalten |
 | `GET /api/compare?id=…&hours=72` | Vorher-Nachher-Vergleich einer Änderung |
-| `GET /api/alerts`, `POST /api/alerts/test` | Alarme ansehen, Webhook testen |
+| `GET /api/alerts`, `POST /api/alerts/test` | Alarme ansehen, Alarm-Webhook testen |
+| `GET /oauth/start`, `GET /oauth/callback` | Webhook-Einrichtung mit Nuki |
+| `POST /api/nuki/webhook` | Empfänger für Nuki, Auth über HMAC-Signatur |
+| `GET /api/webhook-status` | Zustand und Registrierung der Nuki-Webhooks |
 | `POST /api/probe` | Ingest für die Sonden, Auth über `X-Probe-Token` |
 | `GET /api/probes?days=7` | Auswertung der Sondendaten |
 | `GET /api/export/summary.csv`, `/api/export/outages.csv` | Exporte für die Eskalation |

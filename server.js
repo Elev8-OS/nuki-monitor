@@ -7,7 +7,8 @@ import * as db from './src/db.js';
 import { buildOverview, compareWindows, batteryTrend } from './src/analysis.js';
 import { startPolling, pollOnce } from './src/poller.js';
 import { notify } from './src/alerts.js';
-import { verifySignature, handleWebhook, webhookHealth, webhooksEnabled, recordSignatureFailure } from './src/webhook.js';
+import { verifySignature, handleWebhook, webhookHealth, webhooksEnabled, recordSignatureFailure, loadSecret } from './src/webhook.js';
+import * as oauth from './src/oauth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
@@ -37,6 +38,18 @@ function sendCsv(res, filename, rows) {
     'Content-Disposition': `attachment; filename="${filename}"`
   });
   res.end('\uFEFF' + body);
+}
+
+function sendPage(res, status, title, body) {
+  const html = `<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title>
+<style>body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;font-size:15px;line-height:1.55;color:#000;background:#fff}
+.wrap{max-width:640px;margin:0 auto;padding:40px 20px}h1{font-size:21px;font-weight:650;margin:0 0 6px}
+.box{border-left:3px solid ${status === 200 ? '#f6bb12' : '#c8322b'};background:#f5f5f5;padding:14px 16px;margin:18px 0}
+code{background:#f5f5f5;padding:1px 5px}a.btn{display:inline-block;border:1px solid #000;padding:6px 11px;text-decoration:none;color:#000}
+a.btn:hover{background:#f6bb12}</style></head><body><div class="wrap"><h1>${title}</h1>${body}</div></body></html>`;
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(html);
 }
 
 function authorized(req) {
@@ -185,6 +198,73 @@ export const app = http.createServer(async (req, res) => {
       const html = await readFile(join(__dirname, 'public', 'setup.html'));
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(html);
+    }
+
+    if (url.pathname === '/oauth/start') {
+      const problem = oauth.configProblem();
+      if (problem) {
+        return sendPage(res, 400, 'Zugang noch nicht vollständig', `
+          <div class="box">${problem}</div>
+          <p>Setze in Railway <code>NUKI_CLIENT_ID</code>, <code>NUKI_CLIENT_SECRET</code> und
+          <code>PUBLIC_URL</code>. Die Werte findest du in Nuki Web unter Advanced API.</p>
+          <p><a class="btn" href="/setup">Zurück</a></p>`);
+      }
+      res.writeHead(302, { Location: oauth.authorizeUrl(oauth.createState()) });
+      return res.end();
+    }
+
+    if (url.pathname === '/oauth/callback') {
+      const error = url.searchParams.get('error');
+      if (error) {
+        return sendPage(res, 400, 'Nuki hat abgebrochen', `
+          <div class="box">${error}: ${url.searchParams.get('error_description') || 'kein Grund angegeben'}</div>
+          <p><a class="btn" href="/setup">Zurück</a></p>`);
+      }
+
+      const code = url.searchParams.get('code');
+      if (!code) {
+        return sendPage(res, 400, 'Kein Code erhalten', `
+          <div class="box">Nuki hat keinen Autorisierungscode mitgeschickt.</div>
+          <p>Stimmt die Redirect URI in Nuki Web exakt mit
+          <code>${oauth.redirectUri()}</code> überein?</p>
+          <p><a class="btn" href="/setup">Zurück</a></p>`);
+      }
+
+      if (!oauth.consumeState(url.searchParams.get('state'))) {
+        return sendPage(res, 400, 'Abgelaufen oder nicht angefordert', `
+          <div class="box">Dieser Rückruf gehört zu keinem laufenden Vorgang. Codes sind kurzlebig.</div>
+          <p>Starte den Vorgang neu.</p>
+          <p><a class="btn" href="/oauth/start">Nochmal verbinden</a></p>`);
+      }
+
+      try {
+        const token = await oauth.exchangeCode(code);
+        const registration = await oauth.registerWebhook(token.access_token);
+        return sendPage(res, 200, 'Webhook eingerichtet', `
+          <div class="box">Nuki schickt Ereignisse ab sofort an
+          <code>${oauth.webhookTarget()}</code>.</div>
+          <p>Das Secret liegt in der Datenbank, du musst nichts nach Railway kopieren.
+          Registrierungs-ID: <code>${registration.id ?? '—'}</code></p>
+          <p>Sperre zur Probe ein Schloss über die Nuki App. Innerhalb von Sekunden
+          muss im Dashboard ein Ereignis erscheinen.</p>
+          <p><a class="btn" href="/">Zum Dashboard</a></p>`);
+      } catch (err) {
+        console.error('[oauth]', err.message);
+        return sendPage(res, 500, 'Einrichtung fehlgeschlagen', `
+          <div class="box">${err.message}</div>
+          <p><a class="btn" href="/oauth/start">Nochmal versuchen</a></p>`);
+      }
+    }
+
+    if (url.pathname === '/api/webhook-status') {
+      return sendJson(res, 200, {
+        health: await webhookHealth(),
+        registration: await oauth.registrationInfo(),
+        oauth_ready: oauth.oauthConfigured(),
+        oauth_problem: oauth.configProblem(),
+        redirect_uri: oauth.redirectUri(),
+        webhook_target: oauth.webhookTarget()
+      });
     }
 
     if (url.pathname === '/api/overview') {
@@ -342,6 +422,7 @@ export const app = http.createServer(async (req, res) => {
 
 if (process.env.NODE_ENV !== 'test') {
   db.migrate()
+    .then(() => loadSecret())
     .then(() => {
       app.listen(PORT, () => console.log(`Nuki Monitor laeuft auf Port ${PORT}`));
       if (webhooksEnabled()) {

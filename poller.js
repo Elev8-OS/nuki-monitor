@@ -9,9 +9,10 @@ import { webhooksEnabled } from './webhook.js';
  * der Poll deshalb nur noch als seltener Abgleich, damit ein verpasster
  * Webhook nicht unbemerkt bleibt.
  */
-const POLL_INTERVAL_MS = webhooksEnabled()
-  ? Number(process.env.RECONCILE_INTERVAL_SECONDS || 900) * 1000
-  : Number(process.env.POLL_INTERVAL_SECONDS || 60) * 1000;
+const pollIntervalMs = () =>
+  webhooksEnabled()
+    ? Number(process.env.RECONCILE_INTERVAL_SECONDS || 900) * 1000
+    : Number(process.env.POLL_INTERVAL_SECONDS || 60) * 1000;
 const SAMPLE_INTERVAL_MS = Number(process.env.SAMPLE_INTERVAL_MINUTES || 15) * 60 * 1000;
 const SAMPLE_RETENTION_DAYS = Number(process.env.SAMPLE_RETENTION_DAYS || 90);
 const EVENT_RETENTION_DAYS = Number(process.env.EVENT_RETENTION_DAYS || 365);
@@ -192,8 +193,8 @@ export async function pollOnce() {
 export function startPolling() {
   const tick = async () => {
     await pollOnce();
-    setTimeout(tick, POLL_INTERVAL_MS);
+    setTimeout(tick, pollIntervalMs());
   };
   tick();
-  console.log(`Polling alle ${POLL_INTERVAL_MS / 1000} Sekunden.`);
+  console.log(`Polling alle ${pollIntervalMs() / 1000} Sekunden.`);
 }

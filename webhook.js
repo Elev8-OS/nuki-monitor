@@ -1,17 +1,35 @@
 import crypto from 'node:crypto';
-import { query } from './db.js';
+import { query, getSetting, setSetting } from './db.js';
 import { classifyServerState, decodeFirmware } from './nuki.js';
 
-const SECRET = process.env.NUKI_WEBHOOK_SECRET || '';
 const REQUIRE_SIGNATURE = process.env.NUKI_WEBHOOK_REQUIRE_SIGNATURE !== 'false';
 
-export const webhooksEnabled = () => Boolean(SECRET);
+/**
+ * Das Secret kann aus zwei Quellen kommen: aus der Umgebungsvariable oder aus
+ * der Registrierung ueber den OAuth-Ablauf. Der Wert aus der Registrierung
+ * gewinnt, weil er der zuletzt bei Nuki hinterlegte ist.
+ */
+let secretCache = process.env.NUKI_WEBHOOK_SECRET || '';
+
+export async function loadSecret() {
+  const stored = await getSetting('nuki_webhook_secret');
+  if (stored) secretCache = stored;
+  return secretCache;
+}
+
+export async function storeSecret(secret) {
+  await setSetting('nuki_webhook_secret', secret);
+  secretCache = secret;
+}
+
+export const webhooksEnabled = () => Boolean(secretCache);
 
 /**
  * Nuki signiert den rohen JSON-Body mit HMAC-SHA256 und legt das Ergebnis
  * in den Header X-Nuki-Signature-SHA256. Verglichen wird zeitkonstant.
  */
 export function verifySignature(rawBody, signature) {
+  const SECRET = secretCache;
   if (!SECRET) return !REQUIRE_SIGNATURE;
   if (!signature) return false;
 

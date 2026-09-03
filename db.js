@@ -141,10 +141,33 @@ create index if not exists webhook_time_idx on webhook_deliveries (received_at d
 alter table devices add column if not exists needs_reconnect boolean not null default false;
 alter table devices add column if not exists admin_pin_state integer;
 alter table events  add column if not exists source text not null default 'poll';
+
+create table if not exists settings (
+  key        text primary key,
+  value      text,
+  updated_at timestamptz not null default now()
+);
 `;
 
 export async function migrate() {
   await query(SCHEMA);
+}
+
+// ------------------------------------------------------------- Einstellungen
+// Hier landen Werte, die zur Laufzeit entstehen - etwa das Webhook-Secret aus
+// der Registrierung. So muss niemand es von Hand nach Railway kopieren.
+
+export async function getSetting(key) {
+  const { rows } = await query('select value from settings where key = $1', [key]);
+  return rows[0]?.value ?? null;
+}
+
+export async function setSetting(key, value) {
+  await query(
+    `insert into settings (key, value) values ($1,$2)
+     on conflict (key) do update set value = excluded.value, updated_at = now()`,
+    [key, value]
+  );
 }
 
 // --------------------------------------------------------------- Geraete

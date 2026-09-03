@@ -14,6 +14,9 @@ process.env.ALERT_AFTER_MINUTES = '0';
 process.env.FLEET_ALERT_THRESHOLD = '2';
 process.env.POLL_INTERVAL_SECONDS = '60';
 process.env.NUKI_WEBHOOK_SECRET = 'webhookgeheim';
+process.env.NUKI_CLIENT_ID = 'clientid';
+process.env.NUKI_CLIENT_SECRET = 'clientsecret';
+process.env.PUBLIC_URL = 'https://nuki.example.com';
 
 // --- Nuki-Mock ---------------------------------------------------------
 let fleet = [
@@ -23,9 +26,25 @@ let fleet = [
     state: { state: 3, batteryCharge: 40, batteryCritical: false, doorsensorState: 2 } }
 ];
 
+let oauthCalls = [];
 const nukiMock = http.createServer((req, res) => {
-  res.writeHead(200, { 'content-type': 'application/json' });
-  res.end(JSON.stringify(fleet));
+  let body = '';
+  req.on('data', (c) => (body += c));
+  req.on('end', () => {
+    if (req.url.startsWith('/oauth/token')) {
+      oauthCalls.push({ url: req.url, auth: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ access_token: 'token-mit-scope', expires_in: 3600 }));
+    }
+    if (req.url === '/api/decentralWebhook' && req.method === 'PUT') {
+      const parsed = JSON.parse(body);
+      oauthCalls.push({ register: parsed, auth: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ id: 987654321, secret: 'frisches-secret', webhookUrl: parsed.webhookUrl, webhookFeatures: parsed.webhookFeatures }));
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(fleet));
+  });
 });
 await new Promise((r) => nukiMock.listen(4721, r));
 process.env.NUKI_BASE_URL = 'http://127.0.0.1:4721';
@@ -330,6 +349,77 @@ assert.equal(health.body.webhooks.enabled, true);
 assert.ok(health.body.webhooks.total_24h > 0);
 assert.ok(health.body.webhooks.signature_failures_24h >= 1);
 console.log('✓ Webhook-Zustand wird protokolliert und ist abrufbar');
+
+// --- OAuth-Ablauf ------------------------------------------------------
+const oauthModule = await import('../src/oauth.js');
+assert.equal(oauthModule.redirectUri(), 'https://nuki.example.com/oauth/callback');
+assert.equal(oauthModule.webhookTarget(), 'https://nuki.example.com/api/nuki/webhook');
+assert.equal(oauthModule.configProblem(), null);
+
+const authUrl = oauthModule.authorizeUrl('teststate');
+assert.ok(authUrl.includes('scope=smartlock+smartlock.auth+account+webhook.decentral'), 'Scope fehlt in der Autorisierungs-URL');
+assert.ok(authUrl.includes('redirect_uri=https%3A%2F%2Fnuki.example.com%2Foauth%2Fcallback'));
+console.log('✓ Autorisierungs-URL enthaelt Scope und Redirect URI');
+
+const st = oauthModule.createState();
+assert.equal(oauthModule.consumeState(st), true);
+assert.equal(oauthModule.consumeState(st), false, 'State darf nur einmal gelten');
+assert.equal(oauthModule.consumeState('untergeschoben'), false);
+console.log('✓ State gilt genau einmal und schuetzt vor fremden Rueckrufen');
+
+const badState = await api('/oauth/callback?code=abc&state=gefaelscht');
+assert.equal(badState.status, 400);
+assert.ok(String(badState.body).includes('Nochmal verbinden'));
+
+const denied = await api('/oauth/callback?error=access_denied');
+assert.equal(denied.status, 400);
+
+const noCode = await api('/oauth/callback?state=x');
+assert.equal(noCode.status, 400);
+assert.ok(String(noCode.body).includes('nuki.example.com/oauth/callback'), 'Fehlerseite nennt die erwartete Redirect URI nicht');
+console.log('✓ Fehlerfaelle des Rueckrufs werden verstaendlich beantwortet');
+
+// Vollstaendiger Durchlauf mit gueltigem State
+const goodState = oauthModule.createState();
+oauthCalls = [];
+const done = await api(`/oauth/callback?code=echter-code&state=${goodState}`);
+assert.equal(done.status, 200);
+assert.ok(String(done.body).includes('Webhook eingerichtet'));
+
+const tokenCall = oauthCalls.find((c) => c.url?.startsWith('/oauth/token'));
+assert.ok(tokenCall, 'Code wurde nicht getauscht');
+assert.equal(tokenCall.auth, 'Basic ' + Buffer.from('clientid:clientsecret').toString('base64'));
+
+const registerCall = oauthCalls.find((c) => c.register);
+assert.ok(registerCall, 'Webhook wurde nicht registriert');
+assert.equal(registerCall.register.webhookUrl, 'https://nuki.example.com/api/nuki/webhook');
+assert.deepEqual(registerCall.register.webhookFeatures, ['DEVICE_STATUS', 'DEVICE_MASTERDATA', 'DEVICE_LOGS']);
+assert.equal(registerCall.auth, 'Bearer token-mit-scope');
+console.log('✓ Rueckruf tauscht den Code, registriert den Webhook und meldet Erfolg');
+
+// Das neue Secret muss sofort fuer die Signaturpruefung gelten
+const storedSecret = await db.getSetting('nuki_webhook_secret');
+assert.equal(storedSecret, 'frisches-secret');
+const newSig = (body) => crypto.createHmac('sha256', 'frisches-secret').update(body).digest('hex');
+const withNew = JSON.stringify({ feature: 'DEVICE_STATUS', smartlockId: 111, serverState: 0, state: { state: 1 } });
+const accepted = await api('/api/nuki/webhook', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Nuki-Signature-SHA256': newSig(withNew) },
+  body: withNew
+});
+assert.equal(accepted.status, 200);
+const withOld = await api('/api/nuki/webhook', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Nuki-Signature-SHA256': sign(withNew) },
+  body: withNew
+});
+assert.equal(withOld.status, 401, 'Das alte Secret darf nach der Registrierung nicht mehr gelten');
+console.log('✓ Neues Secret gilt sofort, das alte wird abgewiesen');
+
+const status = await api('/api/webhook-status');
+assert.equal(status.body.registration.id, '987654321');
+assert.equal(status.body.oauth_ready, true);
+console.log('✓ Registrierung ist ueber den Statusendpunkt sichtbar');
 
 nukiMock.close();
 hookMock.close();
