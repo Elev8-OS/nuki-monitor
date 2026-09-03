@@ -67,8 +67,23 @@
   <table><thead><tr><th>Standort</th><th>Router</th><th>WPA</th><th>Kanal</th><th>Mesh</th><th>Schlösser</th><th></th></tr></thead>
   <tbody id="siteRows"></tbody></table>
 
+  <h2>Standorte importieren</h2>
+  <p class="lede">Fertige Standortliste als JSON einfügen, etwa <code>data/elev8-standorte.json</code> aus dem Repository. Bestehende Standorte werden ergänzt, nicht überschrieben.</p>
+  <p><textarea id="importJson" rows="4" style="width:100%" placeholder='{"sites":[{"name":"SH Neustadt 2","latitude":47.693858,"longitude":8.632418,"wifi_ssids":["The R Apartment"]}]}'></textarea></p>
+  <p><button id="importBtn" type="button">Standorte importieren</button></p>
+
+  <h2>Automatisch zuordnen</h2>
+  <p class="lede">Vergleicht die WLAN-SSID und die Koordinaten aus den Nuki-Daten mit den Standorten. Stimmen beide überein, gilt der Vorschlag als sicher. Angewendet wird nur, was du auswählst.</p>
+  <p>
+    <label style="display:inline-block">Radius in Metern
+      <input id="radius" type="number" value="150" min="20" max="2000" style="width:90px">
+    </label>
+    <button id="matchBtn" type="button">Vorschläge berechnen</button>
+  </p>
+  <div id="matchBox"></div>
+
   <h2>Schlösser zuordnen</h2>
-  <p class="lede">Ohne Zuordnung kann das Dashboard weder Standorte vergleichen noch die Wirkung einer Änderung berechnen.</p>
+  <p class="lede">Von Hand nachbessern, was die automatische Zuordnung offen gelassen hat.</p>
   <table><thead><tr><th>Schloss</th><th>Standort</th></tr></thead><tbody id="deviceRows"></tbody></table>
 
   <h2>Änderung eintragen</h2>
@@ -242,6 +257,67 @@ async function loadAll() {
     return tr;
   }));
 }
+
+$('importBtn').addEventListener('click', async () => {
+  const raw = $('importJson').value.trim();
+  if (!raw) return message('Erst die JSON-Liste einfügen.', 'error');
+  try {
+    const parsed = JSON.parse(raw);
+    const result = await api('/api/sites/import', { method: 'POST', body: JSON.stringify(parsed) });
+    message(`${result.imported} Standorte importiert oder ergänzt.`);
+    $('importJson').value = '';
+    loadAll();
+  } catch (error) {
+    message(error.message.includes('JSON') ? 'Das ist kein gültiges JSON.' : error.message, 'error');
+  }
+});
+
+$('matchBtn').addEventListener('click', async () => {
+  const box = $('matchBox');
+  box.textContent = 'Wird berechnet…';
+  try {
+    const data = await api('/api/match?radius=' + Number($('radius').value || 150));
+
+    if (!data.sites_with_coordinates) {
+      box.innerHTML = '<div class="notice error">Kein Standort hat Koordinaten. Importiere zuerst die Standortliste.</div>';
+      return;
+    }
+
+    const s = data.summary;
+    const head = `<div class="notice">${s.sicher} sicher · ${s.wahrscheinlich} wahrscheinlich · ${s.pruefen} zu prüfen · ${s.unklar} unklar. ` +
+      `${s.ohne_koordinaten} Schlösser ohne Koordinaten, ${s.ohne_ssid} ohne SSID in den Nuki-Daten.</div>`;
+
+    const rows = data.proposals.map((p) => {
+      const checked = p.site_id && (p.confidence === 'sicher' || p.confidence === 'wahrscheinlich') ? 'checked' : '';
+      const disabled = p.site_id ? '' : 'disabled';
+      return `<tr>
+        <td><input type="checkbox" class="matchPick" data-lock="${p.smartlock_id}" data-site="${p.site_id || ''}" ${checked} ${disabled}></td>
+        <td>${p.name}<div class="sub">${p.ssid ? 'SSID: ' + p.ssid : 'keine SSID'}${p.coordinates ? '' : ' · keine Koordinaten'}</div></td>
+        <td>${p.site_name || '—'}</td>
+        <td>${p.confidence}<div class="sub">${p.reason}</div></td>
+      </tr>`;
+    }).join('');
+
+    box.innerHTML = head +
+      '<table><thead><tr><th></th><th>Schloss</th><th>Vorschlag</th><th>Sicherheit</th></tr></thead><tbody>' +
+      rows + '</tbody></table>' +
+      '<p><button id="applyBtn" type="button">Ausgewählte zuordnen</button></p>';
+
+    $('applyBtn').addEventListener('click', async () => {
+      const assignments = [...document.querySelectorAll('.matchPick:checked')].map((el) => ({
+        smartlock_id: Number(el.dataset.lock),
+        site_id: Number(el.dataset.site)
+      }));
+      if (!assignments.length) return message('Nichts ausgewählt.', 'error');
+      const result = await api('/api/match/apply', { method: 'POST', body: JSON.stringify({ assignments }) });
+      message(`${result.applied} Schlösser zugeordnet.`);
+      box.innerHTML = '';
+      loadAll();
+    });
+  } catch (error) {
+    box.innerHTML = `<div class="notice error">${error.message}</div>`;
+  }
+});
 
 $('siteForm').addEventListener('submit', async (e) => {
   e.preventDefault();

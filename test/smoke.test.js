@@ -32,7 +32,14 @@ const nukiMock = http.createServer((req, res) => {
   req.on('data', (c) => (body += c));
   req.on('end', () => {
     if (req.url.startsWith('/oauth/token')) {
-      oauthCalls.push({ url: req.url, auth: req.headers.authorization });
+      oauthCalls.push({ url: req.url, auth: req.headers.authorization, body });
+      // Wie die echte API: ein falsch kodierter Scope wird abgelehnt.
+      const scope = new URL('http://x' + req.url).searchParams.get('scope') ||
+        new URLSearchParams(body).get('scope');
+      if (!scope || scope.includes('+')) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'server_error', error_description: 'Internal Server Error (500)' }));
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ access_token: 'token-mit-scope', expires_in: 3600 }));
     }
@@ -350,6 +357,93 @@ assert.ok(health.body.webhooks.total_24h > 0);
 assert.ok(health.body.webhooks.signature_failures_24h >= 1);
 console.log('✓ Webhook-Zustand wird protokolliert und ist abrufbar');
 
+// --- Zuordnung ueber SSID und Koordinaten ------------------------------
+const { proposeAssignments, distanceMeters, extractGeo, extractSsid } = await import('../src/matching.js');
+
+// Entfernungsrechnung gegen einen bekannten Wert: Neustadt 2 zu Rosengasse 2
+// in Schaffhausen sind rund 130 Meter.
+const d = distanceMeters({ lat: 47.693858, lng: 8.632418 }, { lat: 47.693934, lng: 8.634193 });
+assert.ok(d > 100 && d < 160, `Entfernung unerwartet: ${Math.round(d)} m`);
+console.log('✓ Entfernungsrechnung stimmt gegen eine bekannte Strecke');
+
+// Koordinaten und SSID werden gefunden, egal wo sie in der Antwort stehen.
+assert.deepEqual(extractGeo({ config: { latitude: 47.1, longitude: 8.2 } }), { lat: 47.1, lng: 8.2 });
+assert.equal(extractGeo({ config: { latitude: 0, longitude: 0 } }), null, '0/0 darf nicht als gepflegt gelten');
+assert.equal(extractGeo({ nichts: true }), null);
+assert.equal(extractSsid({ config: { wifiSsid: 'The R Apartment' } }), 'The R Apartment');
+assert.equal(extractSsid({ a: { b: { ssid: 'Elevate' } } }), 'Elevate');
+assert.equal(extractSsid({ config: { wifiSsid: '  ' } }), null);
+console.log('✓ Koordinaten und SSID werden auch verschachtelt gefunden');
+
+const testSites = [
+  { id: 1, name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.632418, ssids: ['The R Apartment'] },
+  { id: 2, name: 'Basel Bruderholz', latitude: 47.542003, longitude: 7.593547, ssids: ['The R Apartments'] },
+  { id: 3, name: 'Neuhausen Engestrasse', latitude: 47.686577, longitude: 8.612133, ssids: ['The R Apartments'] },
+  { id: 4, name: 'SH Weinsteig', latitude: 47.708928, longitude: 8.632647, ssids: ['Elevate'] }
+];
+
+const proposals = proposeAssignments({
+  devices: [
+    // 1. SSID und Koordinaten stimmen ueberein
+    { smartlock_id: 1, name: 'Neustadt Tür', last_payload: { config: { latitude: 47.69388, longitude: 8.63245, wifiSsid: 'The R Apartment' } } },
+    // 2. Mehrdeutige SSID, aber Koordinaten entscheiden
+    { smartlock_id: 2, name: 'Neuhausen Tür', last_payload: { config: { latitude: 47.68660, longitude: 8.61215, wifiSsid: 'The R Apartments' } } },
+    // 3. Nur SSID, keine Koordinaten
+    { smartlock_id: 3, name: 'Weinsteig Tür', last_payload: { config: { latitude: 0, longitude: 0, wifiSsid: 'Elevate' } } },
+    // 4. Mehrdeutige SSID und keine brauchbaren Koordinaten
+    { smartlock_id: 4, name: 'Unbekannt', last_payload: { config: { wifiSsid: 'The R Apartments' } } },
+    // 5. Gar nichts
+    { smartlock_id: 5, name: 'Leer', last_payload: { config: {} } }
+  ],
+  sites: testSites,
+  radiusMeters: 150
+});
+
+const byId = Object.fromEntries(proposals.map((p) => [p.smartlock_id, p]));
+assert.equal(byId['1'].site_id, 1);
+assert.equal(byId['1'].confidence, 'sicher');
+assert.equal(byId['2'].site_id, 3, 'Koordinaten muessen die mehrdeutige SSID aufloesen');
+assert.equal(byId['3'].site_id, 4);
+assert.equal(byId['3'].confidence, 'wahrscheinlich');
+assert.equal(byId['4'].site_id, null, 'mehrdeutige SSID ohne Koordinaten darf nicht zugeordnet werden');
+assert.equal(byId['4'].confidence, 'unklar');
+assert.equal(byId['5'].site_id, null);
+console.log('✓ Zuordnung: SSID plus Koordinaten, Mehrdeutigkeit wird nicht geraten');
+
+// Import und Anwendung ueber HTTP
+const imported = await api('/api/sites/import', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ sites: [
+    { name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.632418, wifi_ssids: ['The R Apartment'], address: 'Neustadt 2' },
+    { name: 'Ohne Name Test' }
+  ] })
+});
+assert.equal(imported.status, 200);
+assert.equal(imported.body.imported, 2);
+
+const matchRes = await api('/api/match?radius=150');
+assert.equal(matchRes.status, 200);
+assert.ok(matchRes.body.sites_with_coordinates >= 1);
+assert.ok(Array.isArray(matchRes.body.proposals));
+
+const applyRes = await api('/api/match/apply', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ assignments: [{ smartlock_id: 222, site_id: imported.body.sites[0].id }] })
+});
+assert.equal(applyRes.body.applied, 1);
+const assigned = (await db.listDevices()).find((x) => Number(x.smartlock_id) === 222);
+assert.equal(assigned.site_name, 'SH Neustadt 2');
+console.log('✓ Import, Vorschlag und Anwendung laufen ueber HTTP');
+
+// Ein Import darf gepflegte Werte nicht leeren
+await db.createSite({ name: 'SH Neustadt 2', router_model: 'Internet-Box 4', wpa_mode: 'WPA2' });
+await db.createSite({ name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.632418 });
+const kept = (await db.listSites()).find((x) => x.name === 'SH Neustadt 2');
+assert.equal(kept.router_model, 'Internet-Box 4', 'ein erneuter Import hat gepflegte Werte geloescht');
+console.log('✓ Erneuter Import ueberschreibt gepflegte Werte nicht');
+
 // --- OAuth-Ablauf ------------------------------------------------------
 const oauthModule = await import('../src/oauth.js');
 assert.equal(oauthModule.redirectUri(), 'https://nuki.example.com/oauth/callback');
@@ -388,6 +482,10 @@ assert.ok(String(done.body).includes('Webhook eingerichtet'));
 
 const tokenCall = oauthCalls.find((c) => c.url?.startsWith('/oauth/token'));
 assert.ok(tokenCall, 'Code wurde nicht getauscht');
+// Der Scope muss als Leerzeichen-Trennung ankommen, nicht als %2B.
+const sentScope = new URL('http://x' + tokenCall.url).searchParams.get('scope');
+assert.equal(sentScope, 'smartlock smartlock.auth account webhook.decentral');
+assert.ok(!tokenCall.url.includes('%2B'), 'Scope wurde doppelt kodiert');
 assert.equal(tokenCall.auth, 'Basic ' + Buffer.from('clientid:clientsecret').toString('base64'));
 
 const registerCall = oauthCalls.find((c) => c.register);

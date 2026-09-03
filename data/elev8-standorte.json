@@ -1,0 +1,261 @@
+{
+  "_hinweis": "Aus Elev8 Suite erzeugt, gruppiert nach Gebaeude. Ein Standort ist ein Router, und ein Router steht pro Gebaeude - nicht pro Wohnung. Mehrere Listings an derselben Adresse wurden deshalb zusammengefasst. Router-Modell, WPA-Modus und Kanal traegt ihr selbst nach, die kennt Elev8 nicht. Import ueber Standorte & Aenderungen oder POST /api/sites/import.",
+  "sites": [
+    {
+      "name": "SH Neustadt 2",
+      "address": "Neustadt 2, 8200 Schaffhausen",
+      "latitude": 47.693858,
+      "longitude": 8.632418,
+      "wifi_ssids": ["The R Apartment"],
+      "notes": "Cholfirst, Hemmental, Randen. Vier Einheiten im Gebaeude."
+    },
+    {
+      "name": "SH Unterstadt 15",
+      "address": "Unterstadt 15, 8200 Schaffhausen",
+      "latitude": 47.695396,
+      "longitude": 8.639379,
+      "wifi_ssids": ["The R Apartment Hurbig", "The R Apartment Munot"],
+      "notes": "Hurbig und Munot."
+    },
+    {
+      "name": "SH Unterstadt 40",
+      "address": "Unterstadt 40, 8200 Schaffhausen",
+      "latitude": 47.695981,
+      "longitude": 8.638711,
+      "wifi_ssids": ["The R Apartment Bodensee"],
+      "notes": "Bodensee. Nur 60 m von Unterstadt 15 entfernt - Radius klein halten."
+    },
+    {
+      "name": "SH Rosengasse 2",
+      "address": "Rosengasse 2, 8200 Schaffhausen",
+      "latitude": 47.693934,
+      "longitude": 8.634193,
+      "wifi_ssids": ["The R Apartment Rosengasse"],
+      "notes": "Rosengasse und Lager Schaffhausen."
+    },
+    {
+      "name": "SH Schuetzengraben 24",
+      "address": "Schützengraben 24, 8200 Schaffhausen",
+      "latitude": 47.698942,
+      "longitude": 8.63559,
+      "wifi_ssids": [],
+      "notes": "Hagen. SSID in Elev8 nicht gepflegt."
+    },
+    {
+      "name": "SH Weinsteig 188",
+      "address": "Weinsteig 188, 8200 Schaffhausen",
+      "latitude": 47.708928,
+      "longitude": 8.632647,
+      "wifi_ssids": ["Elevate"],
+      "notes": "Weinsteig."
+    },
+    {
+      "name": "SH Stokarbergstrasse 86",
+      "address": "Stokarbergstrasse 86, 8200 Schaffhausen",
+      "latitude": 47.697287,
+      "longitude": 8.620095,
+      "wifi_ssids": [],
+      "notes": "Homeoffice."
+    },
+    {
+      "name": "Neuhausen Engestrasse 35",
+      "address": "Engestrasse 35, 8212 Neuhausen am Rheinfall",
+      "latitude": 47.686577,
+      "longitude": 8.612133,
+      "wifi_ssids": ["The R Apartments"],
+      "notes": "Laufen, Mittelfelsen, Rheinfall. Achtung: SSID kommt auch in Basel und Widen vor."
+    },
+    {
+      "name": "Basel Bruderholzstrasse 67",
+      "address": "Bruderholzstrasse 67, 4053 Basel",
+      "latitude": 47.542003,
+      "longitude": 7.593547,
+      "wifi_ssids": ["The R Apartments"],
+      "notes": "Otilia. SSID nicht eindeutig, Koordinaten entscheiden."
+    },
+    {
+      "name": "Basel Dornacherstrasse 185",
+      "address": "Dornacherstrasse 185, 4053 Basel",
+      "latitude": 47.541982,
+      "longitude": 7.593503,
+      "wifi_ssids": ["The R Apartments"],
+      "notes": "Chrischona und Margaretha. Nur wenige Meter von Bruderholzstrasse 67 entfernt - hier hilft weder SSID noch Koordinate, das muss von Hand entschieden werden."
+    },
+    {
+      "name": "Basel Elsaesserstrasse 259",
+      "address": "Elsässerstrasse 259, 4056 Basel",
+      "latitude": 47.576597,
+      "longitude": 7.572115,
+      "wifi_ssids": ["The R Apartment Belchen", "The R Apartment Farnsberg"],
+      "notes": "Belchen und Farnsberg."
+    },
+    {
+      "name": "Balsthal Falkensteinerstrasse 16c",
+      "address": "Falkensteinerstrasse 16c, 4710 Balsthal",
+      "latitude": 47.314789,
+      "longitude": 7.692798,
+      "wifi_ssids": ["Work and Share", "The R Apartment Passwang", "The R Apartment Vogelberg"],
+      "notes": "Engelberg, Holzfluh, Passwang, Vogelberg."
+    },
+    {
+      "name": "Geroldswil Dorfstrasse 78",
+      "address": "Dorfstrasse 78, 8954 Geroldswil",
+      "latitude": 47.42335,
+      "longitude": 8.412349,
+      "wifi_ssids": ["DS", "The R Apartment Uetliberg", "The R Apartment Zugerberg"],
+      "notes": "Adlisberg, Uetliberg, Zugerberg."
+    },
+    {
+      "name": "Widen Hasenbergstrasse 74",
+      "address": "Hasenbergstrasse 74, 8967 Widen",
+      "latitude": 47.378989,
+      "longitude": 8.36505,
+      "wifi_ssids": ["The R Apartments"],
+      "notes": "Hasenberg ML und BB."
+    },
+    {
+      "name": "Kestenholz Feldstrasse 6",
+      "address": "Feldstrasse 6, 4703 Kestenholz",
+      "latitude": 47.285134,
+      "longitude": 7.758157,
+      "wifi_ssids": ["The R Apartment Roggen"],
+      "notes": "Roggen."
+    },
+    {
+      "name": "Obergoesgen Vorstattstrasse 47",
+      "address": "Vorstattstrasse 47, 4653 Obergösgen",
+      "latitude": 47.366251,
+      "longitude": 7.956808,
+      "wifi_ssids": ["The R Apartment Froburg"],
+      "notes": "Froburg."
+    },
+    {
+      "name": "Steffisburg Aarestrasse 49b",
+      "address": "Aarestrasse 49b, 3613 Steffisburg",
+      "latitude": 46.771405,
+      "longitude": 7.608453,
+      "wifi_ssids": ["WLAN_Stockhorn-Loft_Guest"],
+      "notes": "Stockhorn Loft."
+    },
+    {
+      "name": "Olten Hauptgasse 33",
+      "address": "Hauptgasse 33, 4600 Olten",
+      "latitude": 47.349843,
+      "longitude": 7.902737,
+      "wifi_ssids": [],
+      "notes": "Büro."
+    },
+    {
+      "name": "ID Pererenan Apartments",
+      "address": "Jl. Pantai Pererenan, Pererenan, Bali",
+      "latitude": -8.6492,
+      "longitude": 115.1237,
+      "wifi_ssids": ["The R Apartments Pererenan", "The R Apartments"],
+      "notes": "Apartments 1 bis 11. Keine Swisscom-Box, für das Router-Thema nicht relevant."
+    },
+    {
+      "name": "ID Villa Bratan",
+      "address": "Jl. Canggu Padang Linjong, Canggu, Bali",
+      "latitude": -8.638889,
+      "longitude": 115.141209,
+      "wifi_ssids": ["The R Villa Bratan"],
+      "notes": ""
+    },
+    {
+      "name": "ID Villa Tambora",
+      "address": "Jl. Pantai Batu Mejan 28G, Canggu, Bali",
+      "latitude": -8.644151,
+      "longitude": 115.139251,
+      "wifi_ssids": ["The R Villa Tambora"],
+      "notes": ""
+    },
+    {
+      "name": "ID Villa Luwa",
+      "address": "Jl. Jantuk Angsa, Pererenan, Bali",
+      "latitude": -8.634118,
+      "longitude": 115.130075,
+      "wifi_ssids": ["The R Villa Luwa AirPlay"],
+      "notes": ""
+    },
+    {
+      "name": "ID Villa Ranakah",
+      "address": "Jl. Belulang Yeh, Pererenan, Bali",
+      "latitude": -8.633984,
+      "longitude": 115.13743,
+      "wifi_ssids": ["villa_ranakah"],
+      "notes": "Liegt nah bei Masurai und Dempo - Radius unter 100 m halten."
+    },
+    {
+      "name": "ID Villa Masurai",
+      "address": "Jl. Belulang Yeh, Pererenan, Bali",
+      "latitude": -8.63443,
+      "longitude": 115.137047,
+      "wifi_ssids": ["The R Villa Masurai"],
+      "notes": "Nur rund 50 m von Ranakah entfernt."
+    },
+    {
+      "name": "ID Villa Dempo",
+      "address": "Jl. Yeh Belulang, Pererenan, Bali",
+      "latitude": -8.63451,
+      "longitude": 115.137131,
+      "wifi_ssids": [],
+      "notes": "Praktisch am selben Punkt wie Masurai. Zuordnung von Hand."
+    },
+    {
+      "name": "ID Villa Swantika",
+      "address": "Jl. Sempol, Pererenan, Bali",
+      "latitude": -8.636407,
+      "longitude": 115.138304,
+      "wifi_ssids": ["Villa Swantika"],
+      "notes": ""
+    },
+    {
+      "name": "ID Villa Patuha",
+      "address": "Jl. Sempol, Pererenan, Bali",
+      "latitude": -8.636529,
+      "longitude": 115.138244,
+      "wifi_ssids": ["The R Villa Patuha"],
+      "notes": "Nur rund 15 m von Swantika entfernt - hier entscheidet allein die SSID."
+    },
+    {
+      "name": "ID Villa Merapi",
+      "address": "Jl. Sempol, Pererenan, Bali",
+      "latitude": -8.639714,
+      "longitude": 115.138843,
+      "wifi_ssids": ["The R Villa Merapi"],
+      "notes": "Fünf Zimmer im selben Gebäude."
+    },
+    {
+      "name": "ID Villa Samalas",
+      "address": "Jl. Sempol, Pererenan, Bali",
+      "latitude": -8.641694,
+      "longitude": 115.135974,
+      "wifi_ssids": [],
+      "notes": ""
+    },
+    {
+      "name": "ID Villa Sinabung",
+      "address": "Jalan Danau Poso 23, Sanur, Bali",
+      "latitude": -8.705379,
+      "longitude": 115.254862,
+      "wifi_ssids": [],
+      "notes": ""
+    },
+    {
+      "name": "ID Martin Apartments",
+      "address": "Jl. Subak Sari 90, Tibubeneng, Bali",
+      "latitude": -8.668748,
+      "longitude": 115.146482,
+      "wifi_ssids": [],
+      "notes": ""
+    },
+    {
+      "name": "ID Laundry",
+      "address": "Gang Sepan, Mengwi, Bali",
+      "latitude": -8.625096,
+      "longitude": 115.137015,
+      "wifi_ssids": [],
+      "notes": ""
+    }
+  ]
+}

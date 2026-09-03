@@ -9,6 +9,7 @@ import { startPolling, pollOnce } from './src/poller.js';
 import { notify } from './src/alerts.js';
 import { verifySignature, handleWebhook, webhookHealth, webhooksEnabled, recordSignatureFailure, loadSecret } from './src/webhook.js';
 import * as oauth from './src/oauth.js';
+import { proposeAssignments } from './src/matching.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -312,6 +313,61 @@ export const app = http.createServer(async (req, res) => {
         await db.deleteSite(Number(url.searchParams.get('id')));
         return sendJson(res, 200, { deleted: true });
       }
+    }
+
+    // Standorte aus einer Liste anlegen oder ergaenzen, etwa aus Elev8 Suite.
+    if (url.pathname === '/api/sites/import' && req.method === 'POST') {
+      const body = await readBody(req);
+      const sites = Array.isArray(body) ? body : body.sites;
+      if (!Array.isArray(sites)) return sendJson(res, 400, { error: 'Erwartet wird eine Liste von Standorten.' });
+
+      const created = [];
+      const skipped = [];
+      for (const site of sites) {
+        if (!site.name) {
+          skipped.push({ site, reason: 'kein Name' });
+          continue;
+        }
+        created.push(await db.createSite(site));
+      }
+      return sendJson(res, 200, { imported: created.length, skipped, sites: created });
+    }
+
+    // Vorschlaege berechnen. Angewendet wird hier nichts.
+    if (url.pathname === '/api/match') {
+      const radius = Math.min(2000, Math.max(20, Number(url.searchParams.get('radius')) || 150));
+      const [devices, sites] = await Promise.all([db.devicesForMatching(), db.sitesForMatching()]);
+      const proposals = proposeAssignments({ devices, sites, radiusMeters: radius });
+
+      return sendJson(res, 200, {
+        radius_meters: radius,
+        sites_with_coordinates: sites.filter((s) => s.latitude !== null && s.longitude !== null).length,
+        sites_total: sites.length,
+        summary: {
+          sicher: proposals.filter((p) => p.confidence === 'sicher').length,
+          wahrscheinlich: proposals.filter((p) => p.confidence === 'wahrscheinlich').length,
+          pruefen: proposals.filter((p) => p.confidence === 'prüfen').length,
+          unklar: proposals.filter((p) => p.confidence === 'unklar').length,
+          ohne_koordinaten: proposals.filter((p) => !p.coordinates).length,
+          ohne_ssid: proposals.filter((p) => !p.ssid).length
+        },
+        proposals
+      });
+    }
+
+    // Erst hier wird zugeordnet, und nur was ausdruecklich mitgegeben wurde.
+    if (url.pathname === '/api/match/apply' && req.method === 'POST') {
+      const body = await readBody(req);
+      const assignments = Array.isArray(body) ? body : body.assignments;
+      if (!Array.isArray(assignments)) return sendJson(res, 400, { error: 'Erwartet wird eine Liste von Zuordnungen.' });
+
+      let applied = 0;
+      for (const item of assignments) {
+        if (!item.smartlock_id || !item.site_id) continue;
+        await db.assignDevice(item.smartlock_id, item.site_id);
+        applied += 1;
+      }
+      return sendJson(res, 200, { applied });
     }
 
     if (url.pathname === '/api/assign' && req.method === 'POST') {

@@ -150,6 +150,10 @@ create index if not exists webhook_time_idx on webhook_deliveries (received_at d
 alter table devices add column if not exists needs_reconnect boolean not null default false;
 alter table devices add column if not exists admin_pin_state integer;
 alter table events  add column if not exists source text not null default 'poll';
+alter table sites   add column if not exists latitude  numeric;
+alter table sites   add column if not exists longitude numeric;
+alter table sites   add column if not exists wifi_ssids text;
+alter table sites   add column if not exists address text;
 
 create table if not exists settings (
   key        text primary key,
@@ -278,15 +282,21 @@ export async function listSites() {
 }
 
 export async function createSite(site) {
+  // Beim Import darf ein bereits gepflegter Wert nicht durch einen leeren
+  // ueberschrieben werden - deshalb ueberall coalesce.
   const { rows } = await query(
-    `insert into sites (name, router_model, wpa_mode, wifi_channel, has_mesh, notes)
-     values ($1,$2,$3,$4,$5,$6)
+    `insert into sites (name, router_model, wpa_mode, wifi_channel, has_mesh, notes, latitude, longitude, wifi_ssids, address)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
      on conflict (name) do update set
-       router_model = excluded.router_model,
-       wpa_mode = excluded.wpa_mode,
-       wifi_channel = excluded.wifi_channel,
+       router_model = coalesce(excluded.router_model, sites.router_model),
+       wpa_mode = coalesce(excluded.wpa_mode, sites.wpa_mode),
+       wifi_channel = coalesce(excluded.wifi_channel, sites.wifi_channel),
        has_mesh = excluded.has_mesh,
-       notes = excluded.notes
+       notes = coalesce(excluded.notes, sites.notes),
+       latitude = coalesce(excluded.latitude, sites.latitude),
+       longitude = coalesce(excluded.longitude, sites.longitude),
+       wifi_ssids = coalesce(excluded.wifi_ssids, sites.wifi_ssids),
+       address = coalesce(excluded.address, sites.address)
      returning *`,
     [
       site.name,
@@ -294,10 +304,33 @@ export async function createSite(site) {
       site.wpa_mode || null,
       site.wifi_channel || null,
       Boolean(site.has_mesh),
-      site.notes || null
+      site.notes || null,
+      site.latitude ?? null,
+      site.longitude ?? null,
+      Array.isArray(site.wifi_ssids) ? site.wifi_ssids.join('|') : site.wifi_ssids || null,
+      site.address || null
     ]
   );
   return rows[0];
+}
+
+/** Standorte in der Form, die der Zuordnung dient: SSIDs als Liste. */
+export async function sitesForMatching() {
+  const { rows } = await query('select id, name, latitude, longitude, wifi_ssids from sites');
+  return rows.map((row) => ({
+    ...row,
+    ssids: (row.wifi_ssids || '').split('|').map((s) => s.trim()).filter(Boolean)
+  }));
+}
+
+/** Geraete mit Rohdaten und aktueller Zuordnung. */
+export async function devicesForMatching() {
+  const { rows } = await query(
+    `select d.smartlock_id, d.name, d.last_payload, ds.site_id
+     from devices d left join device_sites ds on ds.smartlock_id = d.smartlock_id
+     order by d.name asc`
+  );
+  return rows;
 }
 
 export async function deleteSite(id) {
