@@ -57,31 +57,62 @@ export function authorizeUrl(state) {
   return `${BASE_URL}/oauth/authorize?${params.toString()}`;
 }
 
-/** Tauscht den Code gegen ein Access Token. Client ID und Secret gehen als Basic Auth mit. */
-export async function exchangeCode(code) {
-  const params = new URLSearchParams({
+/**
+ * Tauscht den Code gegen ein Access Token. Client ID und Secret gehen als
+ * Basic Auth mit.
+ *
+ * Wichtig zur Kodierung: URLSearchParams schreibt Leerzeichen bereits als "+".
+ * Wer die Leerzeichen vorher selbst durch "+" ersetzt, erzeugt "%2B" und
+ * damit einen kaputten Scope - Nuki antwortet darauf mit einem 500er.
+ */
+function tokenParams(code) {
+  return new URLSearchParams({
     grant_type: 'authorization_code',
     code,
     redirect_uri: redirectUri(),
-    scope: SCOPES.replace(/ /g, '+')
+    scope: SCOPES
   });
+}
 
-  const res = await fetch(`${BASE_URL}/oauth/token?${params.toString()}`, {
+const basicAuth = () =>
+  'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
+
+async function requestToken(code, { inBody }) {
+  const params = tokenParams(code);
+  const url = inBody ? `${BASE_URL}/oauth/token` : `${BASE_URL}/oauth/token?${params.toString()}`;
+
+  const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-      Authorization: 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64')
-    }
+      Accept: 'application/json',
+      Authorization: basicAuth()
+    },
+    body: inBody ? params.toString() : undefined
   });
 
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Nuki lehnte den Code-Tausch ab (${res.status}): ${text.slice(0, 300)}`);
+  return { ok: res.ok, status: res.status, text: await res.text() };
+}
+
+export async function exchangeCode(code) {
+  // Nukis Dokumentation beschreibt die Parameter in der Query ohne Body.
+  // Schlaegt das fehl, wird der uebliche OAuth-Weg mit Body versucht.
+  let response = await requestToken(code, { inBody: false });
+  if (!response.ok) {
+    const retry = await requestToken(code, { inBody: true });
+    if (retry.ok) response = retry;
+    else {
+      throw new Error(
+        `Nuki lehnte den Code-Tausch ab (${response.status}): ${response.text.slice(0, 300)}. ` +
+          'Häufigste Ursachen: Die Redirect URI in Nuki Web weicht von ' +
+          `${redirectUri()} ab, der Code wurde bereits eingelöst, oder Client ID und Secret passen nicht zusammen.`
+      );
+    }
   }
 
   let data;
   try {
-    data = JSON.parse(text);
+    data = JSON.parse(response.text);
   } catch {
     throw new Error('Antwort auf den Code-Tausch war kein JSON.');
   }
