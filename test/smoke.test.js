@@ -352,7 +352,40 @@ assert.equal(brokenRes.status, 200, 'kaputtes JSON muss trotzdem 200 liefern');
 console.log('✓ Kaputter Payload liefert 200, damit Nuki die Zustellung nicht abschaltet');
 
 // --- Rohdaten-Stichproben ---------------------------------------------
-const { findWifiFields } = await import('../src/webhook.js');
+const { findWifiFields, redact } = await import('../src/webhook.js');
+
+// Echte DEVICE_AUTHS-Nutzlast aus der Produktion: enthaelt einen Keypad-Code.
+const authNutzlast = {
+  feature: 'DEVICE_AUTHS',
+  deleted: false,
+  smartlockAuth: {
+    id: '6a98eb9ccffff7769e24d19a',
+    code: 324952,
+    name: 'Housekeeping Cleanin',
+    authId: 8196,
+    smartlockId: 22658018207
+  }
+};
+
+const bereinigt = redact(authNutzlast);
+assert.equal(bereinigt.smartlockAuth.code, '***entfernt***', 'Zutrittscode wurde nicht entfernt');
+assert.equal(bereinigt.smartlockAuth.name, 'Housekeeping Cleanin', 'harmlose Felder müssen erhalten bleiben');
+assert.equal(bereinigt.smartlockAuth.authId, 8196);
+assert.equal(redact({ a: { pin: '1234', adminPinState: 0 } }).a.pin, '***entfernt***');
+assert.equal(redact({ a: { adminPinState: 0 } }).a.adminPinState, 0, 'adminPinState ist kein Geheimnis');
+console.log('✓ Zutrittscodes und PINs werden aus den Rohdaten entfernt');
+
+// Der Code darf auch nach dem Weg durch den Webhook nirgends auftauchen
+const authBody = JSON.stringify(authNutzlast);
+await api('/api/nuki/webhook', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'X-Nuki-Signature-SHA256': sign(authBody) },
+  body: authBody
+});
+await new Promise((r) => setTimeout(r, 200));
+const nachAuth = await api('/api/webhook-samples?limit=500');
+assert.ok(!JSON.stringify(nachAuth.body).includes('324952'), 'der Zutrittscode steht noch in den Rohdaten');
+console.log('✓ Kein Zutrittscode in den ausgelieferten Rohdaten');
 
 assert.deepEqual(findWifiFields({ config: { wifiEnabled: true } }), [{ pfad: 'config.wifiEnabled', wert: true }]);
 assert.deepEqual(
@@ -527,6 +560,45 @@ const applyRes = await api('/api/match/apply', {
 });
 assert.equal(applyRes.body.applied, 1);
 assert.equal((await db.listDevices()).find((x) => Number(x.smartlock_id) === 222).site_name, 'SH Neustadt 2');
+
+// --- Standort bearbeiten ------------------------------------------------
+const zuAendern = await db.createSite({
+  name: 'Testort', router_model: 'Internet-Box 3', wpa_mode: 'WPA2/WPA3',
+  wifi_channel: 'auto', latitude: 47.1, longitude: 8.1, aliases: ['Testalias']
+});
+
+const geaendert = await api('/api/sites', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    id: zuAendern.id, name: 'Testort', router_model: 'Internet-Box 4',
+    wpa_mode: 'WPA2', wifi_channel: '6', has_mesh: true, notes: 'Kanal fix gesetzt'
+  })
+});
+assert.equal(geaendert.status, 200);
+assert.equal(geaendert.body.router_model, 'Internet-Box 4');
+assert.equal(geaendert.body.wpa_mode, 'WPA2');
+assert.equal(geaendert.body.has_mesh, true);
+assert.equal(geaendert.body.notes, 'Kanal fix gesetzt');
+// Was nicht im Formular steht, darf beim Bearbeiten nicht verloren gehen.
+assert.equal(Number(geaendert.body.latitude), 47.1, 'Koordinaten wurden beim Bearbeiten gelöscht');
+assert.equal(geaendert.body.aliases, 'Testalias', 'Objektnamen wurden beim Bearbeiten gelöscht');
+
+// Ein Feld muss sich auch wieder leeren lassen.
+const geleert = await api('/api/sites', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ id: zuAendern.id, wifi_channel: '' })
+});
+assert.equal(geleert.body.wifi_channel, null, 'Feld liess sich nicht leeren');
+
+const unbekannt = await api('/api/sites', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ id: 999999, router_model: 'x' })
+});
+assert.equal(unbekannt.status, 404);
+console.log('✓ Standort bearbeiten: ändert gezielt, leert auf Wunsch, behält den Rest');
 
 await db.createSite({ name: 'SH Neustadt 2', router_model: 'Internet-Box 4' });
 await db.createSite({ name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.632418 });

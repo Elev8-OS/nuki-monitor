@@ -95,8 +95,16 @@ async function handleDeviceStatus(payload) {
     });
   }
 
+  // 2, 4 und 7 sind Zwischenzustaende waehrend der Motorbewegung. Sie
+  // verdoppeln jede Sperraktion im Protokoll, ohne etwas auszusagen.
+  const ZWISCHENZUSTAENDE = new Set([2, 4, 7]);
   const lockState = state.state ?? previous.lock_state;
-  if (previous.lock_state !== lockState && lockState !== null && lockState !== undefined) {
+  if (
+    previous.lock_state !== lockState &&
+    lockState !== null &&
+    lockState !== undefined &&
+    !ZWISCHENZUSTAENDE.has(lockState)
+  ) {
     kinds.push('lock_state_changed');
     await addEvent(id, 'lock_state_changed', {
       from: previous.lock_state,
@@ -212,6 +220,34 @@ async function handleLogs(payload) {
   return ['activity'];
 }
 
+// Felder, die niemals in der Datenbank oder im Rohdatenfenster landen duerfen.
+// DEVICE_AUTHS liefert Keypad-Codes im Klartext mit.
+const GEHEIM = /(^|_)(code|pin|secret|token|password|passwd|key)($|_)/i;
+
+/**
+ * Ersetzt Zutrittscodes und aehnliche Geheimnisse durch einen Platzhalter.
+ * Die Struktur bleibt erhalten, damit man weiterhin sieht, welche Felder es
+ * gibt - nur der Wert verschwindet.
+ */
+export function redact(node, seen = new WeakSet()) {
+  if (Array.isArray(node)) return node.map((item) => redact(item, seen));
+  if (!node || typeof node !== 'object') return node;
+  if (seen.has(node)) return node;
+  seen.add(node);
+
+  const out = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (GEHEIM.test(key) && (typeof value === 'string' || typeof value === 'number')) {
+      out[key] = '***entfernt***';
+    } else if (value && typeof value === 'object') {
+      out[key] = redact(value, seen);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 async function recordDelivery(feature, ok, error) {
   await query(
     'insert into webhook_deliveries (feature, ok, error) values ($1,$2,$3)',
@@ -233,7 +269,7 @@ export async function handleWebhook(body) {
     try {
       // Immer eine Stichprobe ablegen: nur so laesst sich nachsehen, welche
       // Felder Nuki tatsaechlich liefert, statt es aus der Doku zu raten.
-      await storeWebhookSample(feature, item).catch(() => {});
+      await storeWebhookSample(feature, redact(item)).catch(() => {});
       if (feature === 'DEVICE_STATUS') handled.push(...(await handleDeviceStatus(item)));
       else if (feature === 'DEVICE_MASTERDATA') handled.push(...(await handleMasterData(item)));
       else if (feature === 'DEVICE_LOGS') handled.push(...(await handleLogs(item)));

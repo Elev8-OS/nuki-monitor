@@ -363,6 +363,46 @@ export async function createSite(site) {
   return rows[0];
 }
 
+/**
+ * Aendert einen bestehenden Standort. Anders als createSite werden hier auch
+ * leere Werte uebernommen - beim Bearbeiten von Hand soll man ein Feld auch
+ * wieder leeren koennen.
+ */
+export async function updateSite(id, fields) {
+  const erlaubt = [
+    'name', 'router_model', 'wpa_mode', 'wifi_channel', 'has_mesh',
+    'notes', 'latitude', 'longitude', 'address'
+  ];
+  const sets = [];
+  const werte = [id];
+
+  for (const key of erlaubt) {
+    if (!(key in fields)) continue;
+    werte.push(fields[key] === '' ? null : fields[key]);
+    sets.push(`${key} = $${werte.length}`);
+  }
+
+  for (const [key, spalte] of [['wifi_ssids', 'wifi_ssids'], ['aliases', 'aliases']]) {
+    if (!(key in fields)) continue;
+    const wert = Array.isArray(fields[key]) ? fields[key].join('|') : fields[key] || null;
+    werte.push(wert || null);
+    sets.push(`${spalte} = $${werte.length}`);
+  }
+
+  if (!sets.length) return null;
+
+  const { rows } = await query(
+    `update sites set ${sets.join(', ')} where id = $1 returning *`,
+    werte
+  );
+  return rows[0] || null;
+}
+
+export async function getSite(id) {
+  const { rows } = await query('select * from sites where id = $1', [id]);
+  return rows[0] || null;
+}
+
 /** Standorte in der Form, die der Zuordnung dient: SSIDs als Liste. */
 export async function sitesForMatching() {
   const { rows } = await query('select id, name, latitude, longitude, wifi_ssids, aliases from sites');

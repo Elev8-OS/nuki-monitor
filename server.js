@@ -7,7 +7,7 @@ import * as db from './src/db.js';
 import { buildOverview, compareWindows, batteryTrend } from './src/analysis.js';
 import { startPolling, pollOnce } from './src/poller.js';
 import { notify } from './src/alerts.js';
-import { verifySignature, handleWebhook, webhookHealth, webhooksEnabled, recordSignatureFailure, loadSecret, findWifiFields } from './src/webhook.js';
+import { verifySignature, handleWebhook, webhookHealth, webhooksEnabled, recordSignatureFailure, loadSecret, findWifiFields, redact } from './src/webhook.js';
 import * as oauth from './src/oauth.js';
 import { proposeAssignments, dataQualityReport } from './src/matching.js';
 
@@ -288,6 +288,13 @@ export const app = http.createServer(async (req, res) => {
 
     // Zeigt je Feature die zuletzt empfangene Nutzlast und alles, was nach
     // einem WLAN-Namen aussieht.
+    // Loescht alle gespeicherten Rohdaten. Nach einer Bestandsaufnahme mit
+    // DEVICE_AUTHS gehoert das gedrueckt - dort stehen Keypad-Codes drin.
+    if (url.pathname === '/api/webhook-samples' && req.method === 'DELETE') {
+      await db.query('delete from webhook_samples');
+      return sendJson(res, 200, { geloescht: true });
+    }
+
     if (url.pathname === '/api/webhook-samples' || url.pathname === '/api/webhook-samples.json') {
       const limit = Number(url.searchParams.get('limit')) || 200;
       const [samples, counts] = await Promise.all([db.webhookSamples(limit), db.webhookSampleCounts()]);
@@ -300,10 +307,12 @@ export const app = http.createServer(async (req, res) => {
           findWifiFields(s.payload).map((f) => ({ ...f, feature: s.feature, received_at: s.received_at }))
         ),
         // Vollstaendig und ungefiltert - genau so, wie Nuki es geschickt hat.
+        // Zweite Sicherung: auch bereits gespeicherte Nutzlasten werden beim
+        // Ausliefern noch einmal von Codes befreit.
         samples: samples.map((s) => ({
           feature: s.feature,
           received_at: s.received_at,
-          payload: s.payload
+          payload: redact(s.payload)
         }))
       };
 
@@ -346,7 +355,16 @@ export const app = http.createServer(async (req, res) => {
     // ------------------------------------------------------------ Standorte
     if (url.pathname === '/api/sites') {
       if (req.method === 'GET') return sendJson(res, 200, { sites: await db.listSites() });
-      if (req.method === 'POST') return sendJson(res, 200, await db.createSite(await readBody(req)));
+      if (req.method === 'POST') {
+        const body = await readBody(req);
+        // Mit id wird gezielt geaendert, ohne id angelegt oder ergaenzt.
+        if (body.id) {
+          const aktualisiert = await db.updateSite(Number(body.id), body);
+          if (!aktualisiert) return sendJson(res, 404, { error: 'Standort nicht gefunden.' });
+          return sendJson(res, 200, aktualisiert);
+        }
+        return sendJson(res, 200, await db.createSite(body));
+      }
       if (req.method === 'DELETE') {
         await db.deleteSite(Number(url.searchParams.get('id')));
         return sendJson(res, 200, { deleted: true });

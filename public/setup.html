@@ -48,6 +48,7 @@
   <h2>Standort anlegen</h2>
   <p class="lede">Ein Standort bündelt die Schlösser hinter demselben Router. Die Router-Merkmale sind eure Eingabe — sie machen im Dashboard sichtbar, ob etwa alle Standorte mit WPA2/WPA3-Mixed schlechter laufen. Ein bestehender Name wird aktualisiert statt doppelt angelegt.</p>
   <form class="grid" id="siteForm">
+    <input type="hidden" name="id">
     <label>Name<input name="name" required placeholder="Villa Nord"></label>
     <label>Router<input name="router_model" placeholder="Internet-Box 4"></label>
     <label>WPA-Modus
@@ -62,9 +63,12 @@
     <label>Mesh / WLAN-Box
       <select name="has_mesh"><option value="false">nein</option><option value="true">ja</option></select>
     </label>
-    <button type="submit">Standort speichern</button>
+    <label>Notiz<input name="notes" placeholder="z.B. Kanal 6 fix, WLAN-Box im Keller"></label>
+    <button type="submit" id="siteSubmit">Standort speichern</button>
+    <button type="button" id="siteCancel" style="display:none">Abbrechen</button>
   </form>
-  <table><thead><tr><th>Standort</th><th>Router</th><th>WPA</th><th>Kanal</th><th>Mesh</th><th>Schlösser</th><th></th></tr></thead>
+  <div id="editHint"></div>
+  <table><thead><tr><th>Standort</th><th>Router</th><th>WPA</th><th>Kanal</th><th>Mesh</th><th>Notiz</th><th>Schlösser</th><th></th></tr></thead>
   <tbody id="siteRows"></tbody></table>
 
   <h2>Standorte importieren</h2>
@@ -104,11 +108,12 @@
   <div id="webhookBox"></div>
 
   <h2>Webhook-Rohdaten</h2>
-  <p class="lede">Alles, was Nuki geschickt hat — vollständig und ungefiltert, neueste zuerst. Pro Feature werden die letzten 50 Nutzlasten aufbewahrt.</p>
+  <p class="lede">Alles, was Nuki geschickt hat, neueste zuerst. Pro Feature werden die letzten 50 Nutzlasten aufbewahrt. Einzige Ausnahme: Zutrittscodes und PINs werden durch einen Platzhalter ersetzt — DEVICE_AUTHS liefert Keypad-Codes im Klartext mit.</p>
   <p>
     <button id="samplesBtn" type="button">Rohdaten laden</button>
     <button id="copyBtn" type="button">In die Zwischenablage</button>
     <a class="btn" href="/api/webhook-samples.json?limit=500">Als Datei herunterladen</a>
+    <button id="clearSamplesBtn" type="button">Rohdaten löschen</button>
   </p>
   <div id="samplesBox"></div>
   <textarea id="samplesRaw" rows="30" style="width:100%;font-family:ui-monospace,monospace;font-size:12px" spellcheck="false" placeholder="Hier erscheinen die Rohdaten."></textarea>
@@ -199,9 +204,18 @@ async function loadAll() {
     const tr = document.createElement('tr');
     tr.append(
       cell(site.name), cell(site.router_model), cell(site.wpa_mode),
-      cell(site.wifi_channel), cell(site.has_mesh ? 'ja' : 'nein'), cell(String(site.device_count))
+      cell(site.wifi_channel), cell(site.has_mesh ? 'ja' : 'nein'), cell(site.notes),
+      cell(String(site.device_count))
     );
     const td = document.createElement('td');
+
+    const edit = document.createElement('button');
+    edit.className = 'quiet';
+    edit.textContent = 'bearbeiten';
+    edit.onclick = () => startEdit(site);
+    td.appendChild(edit);
+    td.appendChild(document.createTextNode(' '));
+
     const btn = document.createElement('button');
     btn.className = 'quiet';
     btn.textContent = 'löschen';
@@ -274,6 +288,34 @@ async function loadAll() {
     return tr;
   }));
 }
+
+function startEdit(site) {
+  const f = $('siteForm');
+  f.elements.id.value = site.id;
+  f.elements.name.value = site.name || '';
+  f.elements.router_model.value = site.router_model || '';
+  f.elements.wpa_mode.value = site.wpa_mode || '';
+  f.elements.wifi_channel.value = site.wifi_channel || '';
+  f.elements.has_mesh.value = site.has_mesh ? 'true' : 'false';
+  f.elements.notes.value = site.notes || '';
+
+  $('siteSubmit').textContent = 'Änderungen speichern';
+  $('siteCancel').style.display = '';
+  $('editHint').innerHTML =
+    `<div class="notice">Du bearbeitest <b>${site.name}</b>. Leere Felder werden jetzt auch übernommen, du kannst einen Wert also wieder entfernen. Koordinaten und Objektnamen bleiben unangetastet.</div>`;
+  f.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function endEdit() {
+  const f = $('siteForm');
+  f.reset();
+  f.elements.id.value = '';
+  $('siteSubmit').textContent = 'Standort speichern';
+  $('siteCancel').style.display = 'none';
+  $('editHint').innerHTML = '';
+}
+
+$('siteCancel').addEventListener('click', endEdit);
 
 $('importBtn').addEventListener('click', async () => {
   const raw = $('importJson').value.trim();
@@ -353,19 +395,22 @@ $('matchBtn').addEventListener('click', async () => {
 $('siteForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const f = new FormData(e.target);
+  const id = f.get('id');
   try {
     await api('/api/sites', {
       method: 'POST',
       body: JSON.stringify({
+        ...(id ? { id: Number(id) } : {}),
         name: f.get('name'),
         router_model: f.get('router_model'),
         wpa_mode: f.get('wpa_mode'),
         wifi_channel: f.get('wifi_channel'),
-        has_mesh: f.get('has_mesh') === 'true'
+        has_mesh: f.get('has_mesh') === 'true',
+        notes: f.get('notes')
       })
     });
-    e.target.reset();
-    message('Standort gespeichert.');
+    message(id ? 'Änderungen gespeichert.' : 'Standort gespeichert.');
+    endEdit();
     loadAll();
   } catch (error) { message(error.message, 'error'); }
 });
@@ -416,6 +461,14 @@ $('samplesBtn').addEventListener('click', async () => {
   } catch (error) {
     box.innerHTML = `<div class="notice error">${error.message}</div>`;
   }
+});
+
+$('clearSamplesBtn').addEventListener('click', async () => {
+  if (!confirm('Alle gespeicherten Webhook-Rohdaten löschen?')) return;
+  await api('/api/webhook-samples', { method: 'DELETE' });
+  $('samplesRaw').value = '';
+  $('samplesBox').innerHTML = '';
+  message('Rohdaten gelöscht.');
 });
 
 $('copyBtn').addEventListener('click', async () => {
