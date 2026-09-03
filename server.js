@@ -288,18 +288,35 @@ export const app = http.createServer(async (req, res) => {
 
     // Zeigt je Feature die zuletzt empfangene Nutzlast und alles, was nach
     // einem WLAN-Namen aussieht.
-    if (url.pathname === '/api/webhook-samples') {
-      const samples = await db.webhookSamples();
-      return sendJson(res, 200, {
-        features: samples.map((s) => ({
+    if (url.pathname === '/api/webhook-samples' || url.pathname === '/api/webhook-samples.json') {
+      const limit = Number(url.searchParams.get('limit')) || 200;
+      const [samples, counts] = await Promise.all([db.webhookSamples(limit), db.webhookSampleCounts()]);
+
+      const payload = {
+        stand: new Date().toISOString(),
+        gespeichert: samples.length,
+        je_feature: counts,
+        wlan_gefunden: samples.flatMap((s) =>
+          findWifiFields(s.payload).map((f) => ({ ...f, feature: s.feature, received_at: s.received_at }))
+        ),
+        // Vollstaendig und ungefiltert - genau so, wie Nuki es geschickt hat.
+        samples: samples.map((s) => ({
           feature: s.feature,
-          anzahl: s.anzahl,
           received_at: s.received_at,
-          wlan_felder: findWifiFields(s.payload),
           payload: s.payload
-        })),
-        wlan_gefunden: samples.flatMap((s) => findWifiFields(s.payload))
-      });
+        }))
+      };
+
+      if (url.pathname.endsWith('.json')) {
+        const body = JSON.stringify(payload, null, 2);
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Disposition': 'attachment; filename="nuki-webhook-rohdaten.json"'
+        });
+        return res.end(body);
+      }
+
+      return sendJson(res, 200, payload);
     }
 
     if (url.pathname === '/api/webhook-status') {

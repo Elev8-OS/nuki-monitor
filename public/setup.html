@@ -104,9 +104,14 @@
   <div id="webhookBox"></div>
 
   <h2>Webhook-Rohdaten</h2>
-  <p class="lede">Zeigt je Feature die zuletzt empfangene Nutzlast und hebt alles hervor, was nach einem WLAN-Namen aussieht. Damit lässt sich prüfen, ob Nuki die SSID überhaupt liefert und ob ein Schloss im Gastnetz hängt.</p>
-  <p><button id="samplesBtn" type="button">Rohdaten laden</button></p>
+  <p class="lede">Alles, was Nuki geschickt hat — vollständig und ungefiltert, neueste zuerst. Pro Feature werden die letzten 50 Nutzlasten aufbewahrt.</p>
+  <p>
+    <button id="samplesBtn" type="button">Rohdaten laden</button>
+    <button id="copyBtn" type="button">In die Zwischenablage</button>
+    <a class="btn" href="/api/webhook-samples.json?limit=500">Als Datei herunterladen</a>
+  </p>
   <div id="samplesBox"></div>
+  <textarea id="samplesRaw" rows="30" style="width:100%;font-family:ui-monospace,monospace;font-size:12px" spellcheck="false" placeholder="Hier erscheinen die Rohdaten."></textarea>
 
   <h2>Alarme</h2>
   <p class="lede">Alarme gehen an den Webhook aus <code>ALERT_WEBHOOK_URL</code>. Der Test schickt eine Nachricht mit <code>type: test</code>.</p>
@@ -387,26 +392,41 @@ $('samplesBtn').addEventListener('click', async () => {
   const box = $('samplesBox');
   box.textContent = 'Wird geladen…';
   try {
-    const data = await api('/api/webhook-samples');
-    if (!data.features.length) {
+    const data = await api('/api/webhook-samples?limit=500');
+
+    // Immer die kompletten Rohdaten ins Feld, unabhaengig von jeder Auswertung.
+    $('samplesRaw').value = JSON.stringify(data, null, 2);
+
+    if (!data.gespeichert) {
       box.innerHTML = '<div class="notice">Noch keine Webhooks empfangen. Löse eine Aktion am Schloss aus und lade neu.</div>';
       return;
     }
 
-    const wlan = data.wlan_gefunden.length
-      ? `<div class="notice">WLAN-Felder gefunden: ${data.wlan_gefunden.map((f) => `<code>${f.pfad} = ${f.wert}</code>`).join(', ')}</div>`
-      : '<div class="notice">In den bisher empfangenen Nutzlasten steht kein Feld, das nach einem WLAN-Namen aussieht. Nuki liefert die SSID dann nicht über die API.</div>';
+    const uebersicht = data.je_feature
+      .map((f) => `${f.feature}: ${f.anzahl}, zuletzt ${fmtTime(f.zuletzt)}`)
+      .join(' · ');
 
-    box.innerHTML = wlan + data.features.map((f) => `
-      <h2 style="margin-bottom:2px">${f.feature}</h2>
-      <p class="sub">${f.anzahl} Stichproben, zuletzt ${fmtTime(f.received_at)}${
-        f.wlan_felder.length ? ' · WLAN-Felder: ' + f.wlan_felder.map((x) => x.pfad).join(', ') : ''
-      }</p>
-      <pre style="max-height:260px;overflow:auto;background:#f5f5f5;border:1px solid #e2e2e2;padding:10px;font-size:12px">${
-        JSON.stringify(f.payload, null, 2).replace(/</g, '&lt;')
-      }</pre>`).join('');
+    const wlan = data.wlan_gefunden.length
+      ? `<div class="notice">WLAN-Felder gefunden: ${data.wlan_gefunden
+          .map((f) => `<code>${f.feature} → ${f.pfad} = ${f.wert}</code>`)
+          .join(', ')}</div>`
+      : '<div class="notice">Kein Feld gefunden, dessen Name nach WLAN klingt. Die Rohdaten stehen trotzdem vollständig unten — sieh selbst nach.</div>';
+
+    box.innerHTML = `<div class="notice">${data.gespeichert} Nutzlasten geladen. ${uebersicht}</div>` + wlan;
   } catch (error) {
     box.innerHTML = `<div class="notice error">${error.message}</div>`;
+  }
+});
+
+$('copyBtn').addEventListener('click', async () => {
+  const text = $('samplesRaw').value;
+  if (!text) return message('Erst die Rohdaten laden.', 'error');
+  try {
+    await navigator.clipboard.writeText(text);
+    message('Rohdaten kopiert.');
+  } catch {
+    $('samplesRaw').select();
+    message('Kopieren blockiert — der Text ist markiert, nimm Strg+C.', 'error');
   }
 });
 

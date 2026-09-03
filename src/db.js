@@ -187,7 +187,7 @@ export async function migrate() {
  * Legt eine Stichprobe der Rohdaten ab und behaelt pro Feature nur die
  * juengsten Eintraege - genug zum Nachsehen, ohne die Datenbank zu fluten.
  */
-export async function storeWebhookSample(feature, payload, keepPerFeature = 20) {
+export async function storeWebhookSample(feature, payload, keepPerFeature = 50) {
   await query('insert into webhook_samples (feature, payload) values ($1,$2)', [
     feature,
     JSON.stringify(payload)
@@ -200,16 +200,21 @@ export async function storeWebhookSample(feature, payload, keepPerFeature = 20) 
   );
 }
 
-export async function webhookSamples() {
+/** Alle gespeicherten Nutzlasten, neueste zuerst. */
+export async function webhookSamples(limit = 200) {
   const { rows } = await query(
-    `select distinct on (feature) feature, received_at, payload
-     from webhook_samples order by feature, received_at desc`
+    'select id, feature, received_at, payload from webhook_samples order by received_at desc limit $1',
+    [Math.min(1000, Math.max(1, limit))]
   );
-  const { rows: counts } = await query(
-    'select feature, count(*)::int as anzahl from webhook_samples group by feature'
+  return rows;
+}
+
+export async function webhookSampleCounts() {
+  const { rows } = await query(
+    `select feature, count(*)::int as anzahl, max(received_at) as zuletzt
+     from webhook_samples group by feature order by feature`
   );
-  const byFeature = Object.fromEntries(counts.map((c) => [c.feature, c.anzahl]));
-  return rows.map((row) => ({ ...row, anzahl: byFeature[row.feature] || 0 }));
+  return rows;
 }
 
 export async function getSetting(key) {

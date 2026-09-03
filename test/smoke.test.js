@@ -362,13 +362,23 @@ assert.deepEqual(
 assert.deepEqual(findWifiFields({ config: { latitude: 47.1 } }), []);
 console.log('✓ WLAN-Feldsuche findet verschachtelte Felder und meldet nichts Falsches');
 
-const samples = await api('/api/webhook-samples');
+const samples = await api('/api/webhook-samples?limit=500');
 assert.equal(samples.status, 200);
-assert.ok(samples.body.features.length >= 2, 'Stichproben wurden nicht gespeichert');
-const statusSample = samples.body.features.find((f) => f.feature === 'DEVICE_STATUS');
-assert.ok(statusSample, 'DEVICE_STATUS fehlt in den Stichproben');
-assert.ok(statusSample.payload.smartlockId, 'Nutzlast wurde nicht vollständig gespeichert');
-console.log('✓ Rohdaten je Feature werden gespeichert und sind abrufbar');
+assert.ok(samples.body.gespeichert >= 4, 'zu wenige Nutzlasten gespeichert');
+assert.ok(samples.body.je_feature.length >= 2, 'Übersicht je Feature fehlt');
+
+// Jede empfangene Nutzlast muss vollstaendig erhalten sein, nicht nur die letzte.
+const statusSamples = samples.body.samples.filter((s) => s.feature === 'DEVICE_STATUS');
+assert.ok(statusSamples.length >= 2, 'nur eine DEVICE_STATUS-Nutzlast gespeichert');
+assert.ok(statusSamples.every((s) => s.payload.smartlockId), 'Nutzlast wurde beschnitten');
+assert.ok(samples.body.samples.some((s) => s.feature === 'DEVICE_LOGS'));
+assert.ok(samples.body.samples.some((s) => s.feature === 'DEVICE_CONFIG'), 'unbekanntes Feature fehlt in den Rohdaten');
+
+// Download liefert dieselben Daten als Datei
+const datei = await api('/api/webhook-samples.json?limit=500');
+assert.equal(datei.status, 200);
+assert.ok(datei.body.samples.length === samples.body.samples.length);
+console.log('✓ Alle Rohdaten bleiben vollständig erhalten und sind als Datei abrufbar');
 
 const health = await api('/api/health');
 assert.equal(health.body.webhooks.enabled, true);
