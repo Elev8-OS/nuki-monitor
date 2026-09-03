@@ -154,6 +154,19 @@ alter table sites   add column if not exists latitude  numeric;
 alter table sites   add column if not exists longitude numeric;
 alter table sites   add column if not exists wifi_ssids text;
 alter table sites   add column if not exists address text;
+alter table sites   add column if not exists aliases text;
+alter table devices add column if not exists subscription_state text;
+alter table devices add column if not exists subscription_type text;
+alter table devices add column if not exists wifi_enabled boolean;
+alter table devices add column if not exists matter_state integer;
+
+create table if not exists webhook_samples (
+  id          bigserial primary key,
+  received_at timestamptz not null default now(),
+  feature     text not null,
+  payload     jsonb not null
+);
+create index if not exists webhook_samples_idx on webhook_samples (feature, received_at desc);
 
 create table if not exists settings (
   key        text primary key,
@@ -169,6 +182,35 @@ export async function migrate() {
 // ------------------------------------------------------------- Einstellungen
 // Hier landen Werte, die zur Laufzeit entstehen - etwa das Webhook-Secret aus
 // der Registrierung. So muss niemand es von Hand nach Railway kopieren.
+
+/**
+ * Legt eine Stichprobe der Rohdaten ab und behaelt pro Feature nur die
+ * juengsten Eintraege - genug zum Nachsehen, ohne die Datenbank zu fluten.
+ */
+export async function storeWebhookSample(feature, payload, keepPerFeature = 20) {
+  await query('insert into webhook_samples (feature, payload) values ($1,$2)', [
+    feature,
+    JSON.stringify(payload)
+  ]);
+  await query(
+    `delete from webhook_samples where feature = $1 and id not in (
+       select id from webhook_samples where feature = $1 order by received_at desc limit $2
+     )`,
+    [feature, keepPerFeature]
+  );
+}
+
+export async function webhookSamples() {
+  const { rows } = await query(
+    `select distinct on (feature) feature, received_at, payload
+     from webhook_samples order by feature, received_at desc`
+  );
+  const { rows: counts } = await query(
+    'select feature, count(*)::int as anzahl from webhook_samples group by feature'
+  );
+  const byFeature = Object.fromEntries(counts.map((c) => [c.feature, c.anzahl]));
+  return rows.map((row) => ({ ...row, anzahl: byFeature[row.feature] || 0 }));
+}
 
 export async function getSetting(key) {
   const { rows } = await query('select value from settings where key = $1', [key]);
@@ -285,8 +327,8 @@ export async function createSite(site) {
   // Beim Import darf ein bereits gepflegter Wert nicht durch einen leeren
   // ueberschrieben werden - deshalb ueberall coalesce.
   const { rows } = await query(
-    `insert into sites (name, router_model, wpa_mode, wifi_channel, has_mesh, notes, latitude, longitude, wifi_ssids, address)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    `insert into sites (name, router_model, wpa_mode, wifi_channel, has_mesh, notes, latitude, longitude, wifi_ssids, address, aliases)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
      on conflict (name) do update set
        router_model = coalesce(excluded.router_model, sites.router_model),
        wpa_mode = coalesce(excluded.wpa_mode, sites.wpa_mode),
@@ -296,7 +338,8 @@ export async function createSite(site) {
        latitude = coalesce(excluded.latitude, sites.latitude),
        longitude = coalesce(excluded.longitude, sites.longitude),
        wifi_ssids = coalesce(excluded.wifi_ssids, sites.wifi_ssids),
-       address = coalesce(excluded.address, sites.address)
+       address = coalesce(excluded.address, sites.address),
+       aliases = coalesce(excluded.aliases, sites.aliases)
      returning *`,
     [
       site.name,
@@ -308,7 +351,8 @@ export async function createSite(site) {
       site.latitude ?? null,
       site.longitude ?? null,
       Array.isArray(site.wifi_ssids) ? site.wifi_ssids.join('|') : site.wifi_ssids || null,
-      site.address || null
+      site.address || null,
+      Array.isArray(site.aliases) ? site.aliases.join('|') : site.aliases || null
     ]
   );
   return rows[0];
@@ -316,11 +360,9 @@ export async function createSite(site) {
 
 /** Standorte in der Form, die der Zuordnung dient: SSIDs als Liste. */
 export async function sitesForMatching() {
-  const { rows } = await query('select id, name, latitude, longitude, wifi_ssids from sites');
-  return rows.map((row) => ({
-    ...row,
-    ssids: (row.wifi_ssids || '').split('|').map((s) => s.trim()).filter(Boolean)
-  }));
+  const { rows } = await query('select id, name, latitude, longitude, wifi_ssids, aliases from sites');
+  const split = (value) => (value || '').split('|').map((s) => s.trim()).filter(Boolean);
+  return rows.map((row) => ({ ...row, ssids: split(row.wifi_ssids), aliases: split(row.aliases) }));
 }
 
 /** Geraete mit Rohdaten und aktueller Zuordnung. */

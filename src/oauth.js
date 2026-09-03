@@ -7,9 +7,18 @@ const CLIENT_ID = process.env.NUKI_CLIENT_ID || '';
 const CLIENT_SECRET = process.env.NUKI_CLIENT_SECRET || '';
 const PUBLIC_URL = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
 
-// Nur die Features, die dieser Monitor auswertet. Nuki empfiehlt ausdruecklich,
-// ungenutzte Features abzuschalten, um die Zahl der Webhooks klein zu halten.
-const FEATURES = ['DEVICE_STATUS', 'DEVICE_MASTERDATA', 'DEVICE_LOGS'];
+// Im Normalbetrieb nur, was ausgewertet wird - Nuki empfiehlt ausdruecklich,
+// ungenutzte Features abzuschalten. Fuer eine einmalige Bestandsaufnahme
+// laesst sich alles registrieren, siehe registerWebhook(token, { alle: true }).
+const FEATURES_NORMAL = ['DEVICE_STATUS', 'DEVICE_MASTERDATA', 'DEVICE_LOGS'];
+const FEATURES_ALLE = [
+  'DEVICE_STATUS',
+  'DEVICE_MASTERDATA',
+  'DEVICE_CONFIG',
+  'DEVICE_LOGS',
+  'DEVICE_AUTHS',
+  'ACCOUNT_USER'
+];
 const SCOPES = 'smartlock smartlock.auth account webhook.decentral';
 
 export const oauthConfigured = () => Boolean(CLIENT_ID && CLIENT_SECRET && PUBLIC_URL);
@@ -30,21 +39,25 @@ export function configProblem() {
 const pendingStates = new Map();
 const STATE_TTL_MS = 10 * 60 * 1000;
 
-export function createState() {
+export function createState(alle = false) {
   const state = crypto.randomBytes(16).toString('hex');
-  pendingStates.set(state, Date.now());
-  for (const [key, at] of pendingStates) {
-    if (Date.now() - at > STATE_TTL_MS) pendingStates.delete(key);
+  pendingStates.set(state, { at: Date.now(), alle });
+  for (const [key, entry] of pendingStates) {
+    if (Date.now() - entry.at > STATE_TTL_MS) pendingStates.delete(key);
   }
   return state;
 }
 
+/** Gibt null zurueck, wenn der State ungueltig ist, sonst die Optionen dazu. */
 export function consumeState(state) {
-  if (!state || !pendingStates.has(state)) return false;
-  const at = pendingStates.get(state);
+  if (!state || !pendingStates.has(state)) return null;
+  const entry = pendingStates.get(state);
   pendingStates.delete(state);
-  return Date.now() - at <= STATE_TTL_MS;
+  if (Date.now() - entry.at > STATE_TTL_MS) return null;
+  return { alle: entry.alle };
 }
+
+export const featureList = (alle) => (alle ? FEATURES_ALLE : FEATURES_NORMAL);
 
 export function authorizeUrl(state) {
   const params = new URLSearchParams({
@@ -122,14 +135,15 @@ export async function exchangeCode(code) {
 }
 
 /** Registriert den dezentralen Webhook und legt das Secret in der Datenbank ab. */
-export async function registerWebhook(accessToken) {
+export async function registerWebhook(accessToken, { alle = false } = {}) {
+  const features = featureList(alle);
   const res = await fetch(`${BASE_URL}/api/decentralWebhook`, {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`
     },
-    body: JSON.stringify({ webhookUrl: webhookTarget(), webhookFeatures: FEATURES })
+    body: JSON.stringify({ webhookUrl: webhookTarget(), webhookFeatures: features })
   });
 
   const text = await res.text();
@@ -149,15 +163,17 @@ export async function registerWebhook(accessToken) {
   await setSetting('nuki_webhook_id', String(data.id ?? ''));
   await setSetting('nuki_webhook_url', data.webhookUrl || webhookTarget());
   await setSetting('nuki_webhook_registered_at', new Date().toISOString());
+  await setSetting('nuki_webhook_features', features.join(','));
 
   return data;
 }
 
 export async function registrationInfo() {
-  const [id, url, at] = await Promise.all([
+  const [id, url, at, features] = await Promise.all([
     getSetting('nuki_webhook_id'),
     getSetting('nuki_webhook_url'),
-    getSetting('nuki_webhook_registered_at')
+    getSetting('nuki_webhook_registered_at'),
+    getSetting('nuki_webhook_features')
   ]);
-  return { id, url, registered_at: at };
+  return { id, url, registered_at: at, features: (features || '').split(',').filter(Boolean) };
 }

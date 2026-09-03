@@ -73,7 +73,7 @@
   <p><button id="importBtn" type="button">Standorte importieren</button></p>
 
   <h2>Automatisch zuordnen</h2>
-  <p class="lede">Vergleicht die WLAN-SSID und die Koordinaten aus den Nuki-Daten mit den Standorten. Stimmen beide überein, gilt der Vorschlag als sicher. Angewendet wird nur, was du auswählst.</p>
+  <p class="lede">Vergleicht drei Signale aus den Nuki-Daten mit den Standorten: WLAN-SSID, Koordinaten und den Schlossnamen. Stimmen mindestens zwei überein, gilt der Vorschlag als sicher. Zeigen zwei auf verschiedene Standorte, ist irgendwo etwas falsch gepflegt — solche Fälle werden nicht zugeordnet, sondern ausgewiesen. Angewendet wird nur, was du auswählst.</p>
   <p>
     <label style="display:inline-block">Radius in Metern
       <input id="radius" type="number" value="150" min="20" max="2000" style="width:90px">
@@ -102,6 +102,11 @@
   <h2>Nuki Webhooks</h2>
   <p class="lede">Mit Advanced API Access meldet Nuki jede Zustandsänderung sofort, statt dass die App jede Minute nachfragt. Ein Klick genügt: du bestätigst bei Nuki, der Rest passiert automatisch.</p>
   <div id="webhookBox"></div>
+
+  <h2>Webhook-Rohdaten</h2>
+  <p class="lede">Zeigt je Feature die zuletzt empfangene Nutzlast und hebt alles hervor, was nach einem WLAN-Namen aussieht. Damit lässt sich prüfen, ob Nuki die SSID überhaupt liefert und ob ein Schloss im Gastnetz hängt.</p>
+  <p><button id="samplesBtn" type="button">Rohdaten laden</button></p>
+  <div id="samplesBox"></div>
 
   <h2>Alarme</h2>
   <p class="lede">Alarme gehen an den Webhook aus <code>ALERT_WEBHOOK_URL</code>. Der Test schickt eine Nachricht mit <code>type: test</code>.</p>
@@ -160,7 +165,14 @@ function renderWebhookBox(status) {
   }
 
   parts.push(`<p class="sub">Trage bei Nuki als Redirect URI genau <code>${status.redirect_uri}</code> ein, bevor du verbindest.</p>`);
-  parts.push(`<p><a class="btn" href="/oauth/start">${h.enabled ? 'Neu verbinden' : 'Mit Nuki verbinden'}</a></p>`);
+  if (status.registration?.features?.length) {
+    parts.push(`<p class="sub">Registrierte Features: <code>${status.registration.features.join(', ')}</code></p>`);
+  }
+  parts.push(`<p>
+    <a class="btn" href="/oauth/start">${h.enabled ? 'Neu verbinden' : 'Mit Nuki verbinden'}</a>
+    <a class="btn" href="/oauth/start?features=all" style="margin-left:8px">Mit allen Features verbinden</a>
+  </p>`);
+  parts.push('<p class="sub">Alle Features sind für eine einmalige Bestandsaufnahme gedacht. Danach ohne den Zusatz neu verbinden, sonst kommen dauerhaft Webhooks, die niemand auswertet.</p>');
 
   box.innerHTML = parts.join('');
 }
@@ -284,24 +296,38 @@ $('matchBtn').addEventListener('click', async () => {
     }
 
     const s = data.summary;
-    const head = `<div class="notice">${s.sicher} sicher · ${s.wahrscheinlich} wahrscheinlich · ${s.pruefen} zu prüfen · ${s.unklar} unklar. ` +
-      `${s.ohne_koordinaten} Schlösser ohne Koordinaten, ${s.ohne_ssid} ohne SSID in den Nuki-Daten.</div>`;
+    const head = `<div class="notice">${s.sicher} sicher (davon ${s.drei_signale} mit allen drei Signalen) · ` +
+      `${s.wahrscheinlich} wahrscheinlich · ${s.widerspruch} mit Widerspruch · ${s.unklar} unklar.</div>`;
+
+    const cell = (signal) => signal.site_name
+      ? `<div>${signal.site_name}</div><div class="sub">${signal.value || ''}</div>`
+      : `<div class="sub">${signal.status}${signal.value ? ': ' + signal.value : ''}</div>`;
 
     const rows = data.proposals.map((p) => {
-      const checked = p.site_id && (p.confidence === 'sicher' || p.confidence === 'wahrscheinlich') ? 'checked' : '';
+      const checked = p.site_id && p.confidence !== 'unklar' ? 'checked' : '';
       const disabled = p.site_id ? '' : 'disabled';
-      return `<tr>
+      const style = p.confidence === 'widerspruch' ? ' style="background:#fdf3f2"' : '';
+      return `<tr${style}>
         <td><input type="checkbox" class="matchPick" data-lock="${p.smartlock_id}" data-site="${p.site_id || ''}" ${checked} ${disabled}></td>
-        <td>${p.name}<div class="sub">${p.ssid ? 'SSID: ' + p.ssid : 'keine SSID'}${p.coordinates ? '' : ' · keine Koordinaten'}</div></td>
-        <td>${p.site_name || '—'}</td>
-        <td>${p.confidence}<div class="sub">${p.reason}</div></td>
+        <td>${p.name}</td>
+        <td>${cell(p.signals.ssid)}</td>
+        <td>${cell(p.signals.geo)}</td>
+        <td>${cell(p.signals.name)}</td>
+        <td><b>${p.site_name || '—'}</b><div class="sub">${p.confidence}: ${p.reason}</div></td>
       </tr>`;
     }).join('');
 
+    const q = data.data_quality;
+    const issues = q.issues.length
+      ? '<h2>Was gepflegt werden muss</h2><table><thead><tr><th>Lücke</th><th>Anzahl</th><th>Betroffen</th></tr></thead><tbody>' +
+        q.issues.map((i) => `<tr><td>${i.issue}</td><td>${i.count}</td><td class="sub">${i.devices.slice(0, 6).join(', ')}${i.devices.length > 6 ? ' …' : ''}</td></tr>`).join('') +
+        '</tbody></table>'
+      : '<p class="sub">Keine Lücken gefunden — alle drei Signale sind überall gepflegt.</p>';
+
     box.innerHTML = head +
-      '<table><thead><tr><th></th><th>Schloss</th><th>Vorschlag</th><th>Sicherheit</th></tr></thead><tbody>' +
+      '<table><thead><tr><th></th><th>Schloss</th><th>SSID</th><th>Koordinaten</th><th>Name</th><th>Vorschlag</th></tr></thead><tbody>' +
       rows + '</tbody></table>' +
-      '<p><button id="applyBtn" type="button">Ausgewählte zuordnen</button></p>';
+      '<p><button id="applyBtn" type="button">Ausgewählte zuordnen</button></p>' + issues;
 
     $('applyBtn').addEventListener('click', async () => {
       const assignments = [...document.querySelectorAll('.matchPick:checked')].map((el) => ({
@@ -355,6 +381,33 @@ $('changeForm').addEventListener('submit', async (e) => {
     message('Änderung gespeichert. Der Vergleich erscheint im Dashboard, sobald genug Zeit vergangen ist.');
     loadAll();
   } catch (error) { message(error.message, 'error'); }
+});
+
+$('samplesBtn').addEventListener('click', async () => {
+  const box = $('samplesBox');
+  box.textContent = 'Wird geladen…';
+  try {
+    const data = await api('/api/webhook-samples');
+    if (!data.features.length) {
+      box.innerHTML = '<div class="notice">Noch keine Webhooks empfangen. Löse eine Aktion am Schloss aus und lade neu.</div>';
+      return;
+    }
+
+    const wlan = data.wlan_gefunden.length
+      ? `<div class="notice">WLAN-Felder gefunden: ${data.wlan_gefunden.map((f) => `<code>${f.pfad} = ${f.wert}</code>`).join(', ')}</div>`
+      : '<div class="notice">In den bisher empfangenen Nutzlasten steht kein Feld, das nach einem WLAN-Namen aussieht. Nuki liefert die SSID dann nicht über die API.</div>';
+
+    box.innerHTML = wlan + data.features.map((f) => `
+      <h2 style="margin-bottom:2px">${f.feature}</h2>
+      <p class="sub">${f.anzahl} Stichproben, zuletzt ${fmtTime(f.received_at)}${
+        f.wlan_felder.length ? ' · WLAN-Felder: ' + f.wlan_felder.map((x) => x.pfad).join(', ') : ''
+      }</p>
+      <pre style="max-height:260px;overflow:auto;background:#f5f5f5;border:1px solid #e2e2e2;padding:10px;font-size:12px">${
+        JSON.stringify(f.payload, null, 2).replace(/</g, '&lt;')
+      }</pre>`).join('');
+  } catch (error) {
+    box.innerHTML = `<div class="notice error">${error.message}</div>`;
+  }
 });
 
 $('testWebhook').addEventListener('click', async () => {

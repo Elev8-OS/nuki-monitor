@@ -33,8 +33,9 @@ async function upsertDevice(device, changed, offlineSince) {
     `insert into devices (
        smartlock_id, name, device_type, firmware_version, hardware_version, server_state, online, offline_since,
        battery_charge, battery_critical, battery_charging, lock_state, door_sensor_state,
-       last_payload, needs_reconnect, last_polled_at, last_change_at
-     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$16, now(), case when $15 then now() else null end)
+       last_payload, needs_reconnect, subscription_state, subscription_type, wifi_enabled, matter_state,
+       last_polled_at, last_change_at
+     ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$16,$17,$18,$19,$20, now(), case when $15 then now() else null end)
      on conflict (smartlock_id) do update set
        name = excluded.name,
        device_type = excluded.device_type,
@@ -50,6 +51,10 @@ async function upsertDevice(device, changed, offlineSince) {
        door_sensor_state = excluded.door_sensor_state,
        last_payload = excluded.last_payload,
        needs_reconnect = excluded.needs_reconnect,
+       subscription_state = excluded.subscription_state,
+       subscription_type = excluded.subscription_type,
+       wifi_enabled = excluded.wifi_enabled,
+       matter_state = excluded.matter_state,
        last_polled_at = now(),
        last_change_at = case when $15 then now() else devices.last_change_at end`,
     [
@@ -68,7 +73,11 @@ async function upsertDevice(device, changed, offlineSince) {
       device.door_sensor_state,
       JSON.stringify(device.payload),
       changed,
-      device.needs_reconnect
+      device.needs_reconnect,
+      device.subscription_state,
+      device.subscription_type,
+      device.wifi_enabled,
+      device.matter_state
     ]
   );
 }
@@ -136,6 +145,17 @@ export async function reconcile(device, previous) {
 
     if (previous.name !== device.name) {
       events.push(['renamed', { from: previous.name, to: device.name }]);
+    }
+
+    if (previous.subscription_state !== device.subscription_state) {
+      events.push([
+        'subscription_changed',
+        { from: previous.subscription_state, to: device.subscription_state, type: device.subscription_type }
+      ]);
+    }
+
+    if (previous.wifi_enabled !== device.wifi_enabled && device.wifi_enabled !== null) {
+      events.push([device.wifi_enabled ? 'wifi_enabled' : 'wifi_disabled', {}]);
     }
   }
 

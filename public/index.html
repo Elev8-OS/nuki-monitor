@@ -125,9 +125,9 @@
   <table>
     <thead><tr>
       <th>Schloss</th><th class="num">Abbrüche</th><th class="num hide">Ausfallzeit</th>
-      <th class="num hide">Verfügbar</th><th class="hide">Firmware</th><th class="num hide">Akku</th><th>Verlauf</th>
+      <th class="num hide">Verfügbar</th><th class="hide">Firmware</th><th class="num hide">Akku</th><th class="hide">Abo</th><th>Verlauf</th>
     </tr></thead>
-    <tbody id="rows" class="clickable"><tr><td colspan="7" class="sub">Daten werden geladen…</td></tr></tbody>
+    <tbody id="rows" class="clickable"><tr><td colspan="8" class="sub">Daten werden geladen…</td></tr></tbody>
   </table>
   <div class="legend">
     <span><b style="background:var(--alarm)"></b>offline</span>
@@ -187,7 +187,9 @@ function renderFigures(data) {
     { value: ((data.coverage.coverage ?? 0) * 100).toFixed(1) + ' %', label: 'Messabdeckung',
       flag: (data.coverage.coverage ?? 1) < 0.95 },
     { value: s.battery_critical, label: 'Akku kritisch' },
-    { value: s.needs_reconnect, label: 'Verbindung neu einrichten', flag: s.needs_reconnect > 0 }
+    { value: s.needs_reconnect, label: 'Verbindung neu einrichten', flag: s.needs_reconnect > 0 },
+    { value: s.subscription_inactive, label: 'Abo nicht aktiv', flag: s.subscription_inactive > 0 },
+    { value: s.wifi_disabled, label: 'WLAN-Modul aus', flag: s.wifi_disabled > 0 }
   ];
   document.getElementById('figures').replaceChildren(...items.map((i) =>
     el('div', { class: 'figure' }, [
@@ -247,7 +249,7 @@ const stateDot = (online) => online === true ? 'dot on' : online === false ? 'do
 function renderRows(data) {
   const body = document.getElementById('rows');
   if (!data.devices.length) {
-    body.replaceChildren(el('tr', {}, [el('td', { colspan: '7', class: 'sub',
+    body.replaceChildren(el('tr', {}, [el('td', { colspan: '8', class: 'sub',
       text: 'Noch keine Schlösser erfasst. Die erste Abfrage läuft innerhalb einer Minute nach dem Start.' })]));
     return;
   }
@@ -267,6 +269,7 @@ function renderRows(data) {
       el('td', { class: 'num hide', text: device.availability === null ? '—' : (device.availability * 100).toFixed(2) + ' %' }),
       el('td', { class: 'hide', text: device.firmware || String(device.firmware_raw ?? '—') }),
       el('td', { class: 'num hide', text: device.battery_charge === null ? '—' : device.battery_charge + ' %' }),
+      el('td', { class: 'hide', text: device.subscription_state === 'ACTIVE' ? 'aktiv' : device.subscription_state || '—' }),
       el('td', {}, [renderStrip(device, data)])
     );
 
@@ -372,7 +375,7 @@ async function openDetail(device, tr) {
   tr.setAttribute('aria-expanded', 'true');
 
   const inner = el('div', { class: 'detail-inner' }, [el('div', { class: 'sub', text: 'Details werden geladen…' })]);
-  tr.after(el('tr', { class: 'detail' }, [el('td', { colspan: '7' }, [inner])]));
+  tr.after(el('tr', { class: 'detail' }, [el('td', { colspan: '8' }, [inner])]));
 
   try {
     const res = await fetch(`/api/device?id=${encodeURIComponent(device.smartlock_id)}&days=${state.days}`);
@@ -502,6 +505,12 @@ async function load() {
     }
     if (data.webhooks?.signature_failures_24h > 0) {
       message(`${data.webhooks.signature_failures_24h} Webhooks wurden wegen ungültiger Signatur abgewiesen. Stimmt NUKI_WEBHOOK_SECRET mit dem Secret aus der Registrierung überein?`, 'error');
+    }
+    if (data.summary.subscription_inactive > 0) {
+      message(`${data.summary.subscription_inactive} Schlösser haben kein aktives Nuki-Abo. Ohne Abo gibt es keinen Fernzugriff — das Schloss erscheint offline, obwohl das WLAN in Ordnung ist. Prüfe das, bevor du an den Routern etwas änderst.`, 'error');
+    }
+    if (data.summary.wifi_disabled > 0) {
+      message(`${data.summary.wifi_disabled} Schlösser haben das integrierte WLAN-Modul deaktiviert. Deren Fernzugriff läuft nicht über WLAN, sie gehören nicht in den Router-Vergleich.`, 'error');
     }
     if (data.summary.needs_reconnect > 0) {
       message(`${data.summary.needs_reconnect} Schlösser melden ein Autorisierungsproblem (serverState 1 bis 3). Das ist kein WLAN-Ausfall: die Verbindung zum Nuki-Web-Konto muss neu hergestellt werden.`, 'error');

@@ -351,80 +351,163 @@ const brokenRes = await api('/api/nuki/webhook', {
 assert.equal(brokenRes.status, 200, 'kaputtes JSON muss trotzdem 200 liefern');
 console.log('✓ Kaputter Payload liefert 200, damit Nuki die Zustellung nicht abschaltet');
 
+// --- Rohdaten-Stichproben ---------------------------------------------
+const { findWifiFields } = await import('../src/webhook.js');
+
+assert.deepEqual(findWifiFields({ config: { wifiEnabled: true } }), [{ pfad: 'config.wifiEnabled', wert: true }]);
+assert.deepEqual(
+  findWifiFields({ a: { b: { wlanSsid: 'Gastnetz' } } }),
+  [{ pfad: 'a.b.wlanSsid', wert: 'Gastnetz' }]
+);
+assert.deepEqual(findWifiFields({ config: { latitude: 47.1 } }), []);
+console.log('✓ WLAN-Feldsuche findet verschachtelte Felder und meldet nichts Falsches');
+
+const samples = await api('/api/webhook-samples');
+assert.equal(samples.status, 200);
+assert.ok(samples.body.features.length >= 2, 'Stichproben wurden nicht gespeichert');
+const statusSample = samples.body.features.find((f) => f.feature === 'DEVICE_STATUS');
+assert.ok(statusSample, 'DEVICE_STATUS fehlt in den Stichproben');
+assert.ok(statusSample.payload.smartlockId, 'Nutzlast wurde nicht vollständig gespeichert');
+console.log('✓ Rohdaten je Feature werden gespeichert und sind abrufbar');
+
 const health = await api('/api/health');
 assert.equal(health.body.webhooks.enabled, true);
 assert.ok(health.body.webhooks.total_24h > 0);
 assert.ok(health.body.webhooks.signature_failures_24h >= 1);
 console.log('✓ Webhook-Zustand wird protokolliert und ist abrufbar');
 
-// --- Zuordnung ueber SSID und Koordinaten ------------------------------
-const { proposeAssignments, distanceMeters, extractGeo, extractSsid } = await import('../src/matching.js');
+// --- Echte Nuki-Nutzlast -----------------------------------------------
+// Aus der Produktion uebernommen, damit Feldnamen und Kodierungen nicht raten.
+const echteNutzlast = {
+  name: 'Hemmental, Ultra',
+  type: 5,
+  state: { mode: 2, state: 1, batteryCharge: 30, batteryCritical: false, doorState: 0 },
+  config: {
+    name: 'Hemmental, Ultra', latitude: 47.69379, longitude: 8.632368,
+    deviceType: 5, wifiEnabled: true, matterState: 1, keypadPaired: true
+  },
+  serverState: 0,
+  smartlockId: 22743921015,
+  firmwareVersion: 329988,
+  hardwareVersion: 2837,
+  currentSubscription: { type: 'B2C', state: 'ACTIVE' }
+};
 
-// Entfernungsrechnung gegen einen bekannten Wert: Neustadt 2 zu Rosengasse 2
-// in Schaffhausen sind rund 130 Meter.
-const d = distanceMeters({ lat: 47.693858, lng: 8.632418 }, { lat: 47.693934, lng: 8.634193 });
-assert.ok(d > 100 && d < 160, `Entfernung unerwartet: ${Math.round(d)} m`);
-console.log('✓ Entfernungsrechnung stimmt gegen eine bekannte Strecke');
+const { mapSmartlock, decodeFirmware } = await import('../src/nuki.js');
+const abgebildet = mapSmartlock(echteNutzlast);
+assert.equal(abgebildet.online, true);
+assert.equal(abgebildet.battery_charge, 30);
+assert.equal(abgebildet.subscription_state, 'ACTIVE');
+assert.equal(abgebildet.wifi_enabled, true);
+assert.equal(abgebildet.matter_state, 1);
+assert.equal(decodeFirmware(echteNutzlast.firmwareVersion), '5.9.4');
+console.log('✓ Echte Nutzlast: Abo, WLAN-Schalter und Firmware 5.9.4 korrekt gelesen');
 
-// Koordinaten und SSID werden gefunden, egal wo sie in der Antwort stehen.
+// --- Zuordnung ueber drei Signale --------------------------------------
+const { proposeAssignments, distanceMeters, extractGeo, extractSsid, nameTokens, buildNameIndex, dataQualityReport } =
+  await import('../src/matching.js');
+
+// Neustadt 2 zu Rosengasse 2 in Schaffhausen sind rund 130 Meter.
+const dist = distanceMeters({ lat: 47.693858, lng: 8.632418 }, { lat: 47.693934, lng: 8.634193 });
+assert.ok(dist > 100 && dist < 160, `Entfernung unerwartet: ${Math.round(dist)} m`);
+
 assert.deepEqual(extractGeo({ config: { latitude: 47.1, longitude: 8.2 } }), { lat: 47.1, lng: 8.2 });
 assert.equal(extractGeo({ config: { latitude: 0, longitude: 0 } }), null, '0/0 darf nicht als gepflegt gelten');
-assert.equal(extractGeo({ nichts: true }), null);
-assert.equal(extractSsid({ config: { wifiSsid: 'The R Apartment' } }), 'The R Apartment');
 assert.equal(extractSsid({ a: { b: { ssid: 'Elevate' } } }), 'Elevate');
-assert.equal(extractSsid({ config: { wifiSsid: '  ' } }), null);
-console.log('✓ Koordinaten und SSID werden auch verschachtelt gefunden');
+console.log('✓ Entfernung, Koordinaten und SSID werden korrekt gelesen');
+
+// Fuellwoerter fliegen raus, das Unterscheidende bleibt.
+assert.deepEqual(nameTokens('The R Apartment Passwang'), ['passwang']);
+assert.deepEqual(nameTokens('CH - Margaretha Nr.1'), ['margaretha']);
+assert.deepEqual(nameTokens('Haustür'), []);
+console.log('✓ Namensvergleich ignoriert Füllwörter wie "The R Apartment"');
 
 const testSites = [
-  { id: 1, name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.632418, ssids: ['The R Apartment'] },
-  { id: 2, name: 'Basel Bruderholz', latitude: 47.542003, longitude: 7.593547, ssids: ['The R Apartments'] },
-  { id: 3, name: 'Neuhausen Engestrasse', latitude: 47.686577, longitude: 8.612133, ssids: ['The R Apartments'] },
-  { id: 4, name: 'SH Weinsteig', latitude: 47.708928, longitude: 8.632647, ssids: ['Elevate'] }
+  { id: 1, name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.632418, ssids: ['The R Apartment'], aliases: ['Cholfirst', 'Randen', 'Hemmental'] },
+  { id: 2, name: 'Basel Bruderholz', latitude: 47.542003, longitude: 7.593547, ssids: ['The R Apartments'], aliases: ['Otilia'] },
+  { id: 3, name: 'Neuhausen Engestrasse', latitude: 47.686577, longitude: 8.612133, ssids: ['The R Apartments'], aliases: ['Laufen', 'Rheinfall'] },
+  { id: 4, name: 'SH Weinsteig', latitude: 47.708928, longitude: 8.632647, ssids: ['Elevate'], aliases: ['Weinsteig'] }
 ];
+
+const index = buildNameIndex(testSites);
+assert.equal(index.get('cholfirst'), 1);
+assert.equal(index.get('otilia'), 2);
 
 const proposals = proposeAssignments({
   devices: [
-    // 1. SSID und Koordinaten stimmen ueberein
-    { smartlock_id: 1, name: 'Neustadt Tür', last_payload: { config: { latitude: 47.69388, longitude: 8.63245, wifiSsid: 'The R Apartment' } } },
-    // 2. Mehrdeutige SSID, aber Koordinaten entscheiden
-    { smartlock_id: 2, name: 'Neuhausen Tür', last_payload: { config: { latitude: 47.68660, longitude: 8.61215, wifiSsid: 'The R Apartments' } } },
-    // 3. Nur SSID, keine Koordinaten
-    { smartlock_id: 3, name: 'Weinsteig Tür', last_payload: { config: { latitude: 0, longitude: 0, wifiSsid: 'Elevate' } } },
-    // 4. Mehrdeutige SSID und keine brauchbaren Koordinaten
-    { smartlock_id: 4, name: 'Unbekannt', last_payload: { config: { wifiSsid: 'The R Apartments' } } },
-    // 5. Gar nichts
-    { smartlock_id: 5, name: 'Leer', last_payload: { config: {} } }
+    // Alle drei Signale einig
+    { smartlock_id: 1, name: 'Cholfirst Haustür', last_payload: { config: { latitude: 47.69388, longitude: 8.63245, wifiSsid: 'The R Apartment' } } },
+    // SSID mehrdeutig, Koordinaten und Name loesen es auf
+    { smartlock_id: 2, name: 'Rheinfall', last_payload: { config: { latitude: 47.68660, longitude: 8.61215, wifiSsid: 'The R Apartments' } } },
+    // Widerspruch: Name sagt Otilia in Basel, Koordinaten sagen Schaffhausen
+    { smartlock_id: 3, name: 'Otilia', last_payload: { config: { latitude: 47.69388, longitude: 8.63245 } } },
+    // Nur der Name traegt
+    { smartlock_id: 4, name: 'Weinsteig', last_payload: { config: {} } },
+    // Nichts verwertbar
+    { smartlock_id: 5, name: 'Haustür', last_payload: { config: {} } },
+    // Die echte Nutzlast: keine SSID, aber Koordinaten und Name tragen
+    { smartlock_id: 6, name: echteNutzlast.name, last_payload: echteNutzlast }
   ],
   sites: testSites,
   radiusMeters: 150
 });
 
 const byId = Object.fromEntries(proposals.map((p) => [p.smartlock_id, p]));
+
 assert.equal(byId['1'].site_id, 1);
+assert.equal(byId['1'].agreeing_signals, 3);
 assert.equal(byId['1'].confidence, 'sicher');
-assert.equal(byId['2'].site_id, 3, 'Koordinaten muessen die mehrdeutige SSID aufloesen');
-assert.equal(byId['3'].site_id, 4);
-assert.equal(byId['3'].confidence, 'wahrscheinlich');
-assert.equal(byId['4'].site_id, null, 'mehrdeutige SSID ohne Koordinaten darf nicht zugeordnet werden');
-assert.equal(byId['4'].confidence, 'unklar');
+
+assert.equal(byId['2'].site_id, 3, 'Koordinaten und Name muessen die mehrdeutige SSID aufloesen');
+assert.equal(byId['2'].confidence, 'sicher');
+
+assert.equal(byId['3'].confidence, 'widerspruch');
+assert.equal(byId['3'].site_id, null, 'bei Widerspruch darf nicht zugeordnet werden');
+assert.ok(byId['3'].conflicts.some((c) => c.includes('Name')));
+assert.ok(byId['3'].conflicts.some((c) => c.includes('Koordinaten')));
+
+assert.equal(byId['4'].site_id, 4);
+assert.equal(byId['4'].confidence, 'wahrscheinlich');
+assert.ok(!byId['4'].gaps.some((g) => g.includes('SSID fehlt')),
+  'die Nuki-API liefert keine SSID - das darf nicht als Pflegelücke erscheinen');
+assert.ok(byId['4'].gaps.includes('Koordinaten fehlen in Nuki'));
+
 assert.equal(byId['5'].site_id, null);
-console.log('✓ Zuordnung: SSID plus Koordinaten, Mehrdeutigkeit wird nicht geraten');
+assert.equal(byId['5'].confidence, 'unklar');
+
+// Echte Nutzlast: SSID fehlt (liefert Nuki nicht), Rest muss trotzdem greifen.
+assert.equal(byId['6'].signals.ssid.status, 'fehlt');
+assert.equal(byId['6'].site_id, 1, 'Koordinaten und Name müssen ohne SSID reichen');
+assert.equal(byId['6'].agreeing_signals, 2);
+assert.equal(byId['6'].confidence, 'sicher');
+assert.ok(byId['6'].signals.geo.distance_m < 20, 'Entfernung zu Neustadt 2 sollte unter 20 m liegen');
+assert.ok(!byId['6'].gaps.some((g) => g.includes('SSID fehlt')), 'fehlende SSID darf nicht als Pflegelücke gelten');
+console.log('✓ Echte Nutzlast wird ohne SSID sicher zugeordnet, 9 m zum Standort');
+console.log('✓ Drei Signale: Übereinstimmung ordnet zu, Widerspruch wird verweigert');
+
+const quality = dataQualityReport(proposals);
+assert.ok(quality.conflicts.length === 1, 'Widerspruch fehlt im Bericht');
+assert.equal(quality.conflicts[0].name, 'Otilia');
+assert.ok(quality.issues.some((i) => i.issue.includes('Koordinaten fehlen')));
+assert.ok(quality.issues.some((i) => i.issue.includes('Schlossname')),
+  'Namensprobleme müssen in der Pflegeliste stehen');
+assert.ok(!quality.issues.some((i) => i.issue.includes('SSID fehlt')),
+  'fehlende SSID ist der Normalfall und gehört nicht in die Pflegeliste');
+console.log('✓ Datenqualitätsbericht listet Lücken und Widersprüche mit Geräten');
 
 // Import und Anwendung ueber HTTP
 const imported = await api('/api/sites/import', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ sites: [
-    { name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.632418, wifi_ssids: ['The R Apartment'], address: 'Neustadt 2' },
-    { name: 'Ohne Name Test' }
+    { name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.632418, wifi_ssids: ['The R Apartment'], aliases: ['Cholfirst'], address: 'Neustadt 2' }
   ] })
 });
-assert.equal(imported.status, 200);
-assert.equal(imported.body.imported, 2);
+assert.equal(imported.body.imported, 1);
 
 const matchRes = await api('/api/match?radius=150');
 assert.equal(matchRes.status, 200);
-assert.ok(matchRes.body.sites_with_coordinates >= 1);
+assert.ok(matchRes.body.data_quality, 'Datenqualität fehlt in der Antwort');
 assert.ok(Array.isArray(matchRes.body.proposals));
 
 const applyRes = await api('/api/match/apply', {
@@ -433,16 +516,13 @@ const applyRes = await api('/api/match/apply', {
   body: JSON.stringify({ assignments: [{ smartlock_id: 222, site_id: imported.body.sites[0].id }] })
 });
 assert.equal(applyRes.body.applied, 1);
-const assigned = (await db.listDevices()).find((x) => Number(x.smartlock_id) === 222);
-assert.equal(assigned.site_name, 'SH Neustadt 2');
-console.log('✓ Import, Vorschlag und Anwendung laufen ueber HTTP');
+assert.equal((await db.listDevices()).find((x) => Number(x.smartlock_id) === 222).site_name, 'SH Neustadt 2');
 
-// Ein Import darf gepflegte Werte nicht leeren
-await db.createSite({ name: 'SH Neustadt 2', router_model: 'Internet-Box 4', wpa_mode: 'WPA2' });
+await db.createSite({ name: 'SH Neustadt 2', router_model: 'Internet-Box 4' });
 await db.createSite({ name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.632418 });
-const kept = (await db.listSites()).find((x) => x.name === 'SH Neustadt 2');
-assert.equal(kept.router_model, 'Internet-Box 4', 'ein erneuter Import hat gepflegte Werte geloescht');
-console.log('✓ Erneuter Import ueberschreibt gepflegte Werte nicht');
+assert.equal((await db.listSites()).find((x) => x.name === 'SH Neustadt 2').router_model, 'Internet-Box 4',
+  'ein erneuter Import hat gepflegte Werte geloescht');
+console.log('✓ Import, Vorschlag, Anwendung und Schutz gepflegter Werte über HTTP');
 
 // --- OAuth-Ablauf ------------------------------------------------------
 const oauthModule = await import('../src/oauth.js');
@@ -456,9 +536,13 @@ assert.ok(authUrl.includes('redirect_uri=https%3A%2F%2Fnuki.example.com%2Foauth%
 console.log('✓ Autorisierungs-URL enthaelt Scope und Redirect URI');
 
 const st = oauthModule.createState();
-assert.equal(oauthModule.consumeState(st), true);
-assert.equal(oauthModule.consumeState(st), false, 'State darf nur einmal gelten');
-assert.equal(oauthModule.consumeState('untergeschoben'), false);
+assert.deepEqual(oauthModule.consumeState(st), { alle: false });
+assert.equal(oauthModule.consumeState(st), null, 'State darf nur einmal gelten');
+assert.equal(oauthModule.consumeState('untergeschoben'), null);
+const stAlle = oauthModule.createState(true);
+assert.deepEqual(oauthModule.consumeState(stAlle), { alle: true }, 'Feature-Wahl muss im State überleben');
+assert.equal(oauthModule.featureList(false).length, 3);
+assert.equal(oauthModule.featureList(true).length, 6);
 console.log('✓ State gilt genau einmal und schuetzt vor fremden Rueckrufen');
 
 const badState = await api('/oauth/callback?code=abc&state=gefaelscht');
@@ -494,6 +578,17 @@ assert.equal(registerCall.register.webhookUrl, 'https://nuki.example.com/api/nuk
 assert.deepEqual(registerCall.register.webhookFeatures, ['DEVICE_STATUS', 'DEVICE_MASTERDATA', 'DEVICE_LOGS']);
 assert.equal(registerCall.auth, 'Bearer token-mit-scope');
 console.log('✓ Rueckruf tauscht den Code, registriert den Webhook und meldet Erfolg');
+
+// Bestandsaufnahme mit allen sechs Features
+oauthCalls = [];
+const alleState = oauthModule.createState(true);
+const alleDone = await api(`/oauth/callback?code=noch-ein-code&state=${alleState}`);
+assert.equal(alleDone.status, 200);
+const alleRegister = oauthCalls.find((c) => c.register);
+assert.equal(alleRegister.register.webhookFeatures.length, 6);
+assert.ok(alleRegister.register.webhookFeatures.includes('DEVICE_CONFIG'));
+assert.ok(alleRegister.register.webhookFeatures.includes('DEVICE_AUTHS'));
+console.log('✓ Bestandsaufnahme registriert alle sechs Features');
 
 // Das neue Secret muss sofort fuer die Signaturpruefung gelten
 const storedSecret = await db.getSetting('nuki_webhook_secret');

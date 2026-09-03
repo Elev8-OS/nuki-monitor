@@ -7,9 +7,9 @@ import * as db from './src/db.js';
 import { buildOverview, compareWindows, batteryTrend } from './src/analysis.js';
 import { startPolling, pollOnce } from './src/poller.js';
 import { notify } from './src/alerts.js';
-import { verifySignature, handleWebhook, webhookHealth, webhooksEnabled, recordSignatureFailure, loadSecret } from './src/webhook.js';
+import { verifySignature, handleWebhook, webhookHealth, webhooksEnabled, recordSignatureFailure, loadSecret, findWifiFields } from './src/webhook.js';
 import * as oauth from './src/oauth.js';
-import { proposeAssignments } from './src/matching.js';
+import { proposeAssignments, dataQualityReport } from './src/matching.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -234,7 +234,10 @@ export const app = http.createServer(async (req, res) => {
           <code>PUBLIC_URL</code>. Die Werte findest du in Nuki Web unter Advanced API.</p>
           <p><a class="btn" href="/setup">Zurück</a></p>`);
       }
-      res.writeHead(302, { Location: oauth.authorizeUrl(oauth.createState()) });
+      // ?features=all registriert alle sechs Features fuer eine einmalige
+      // Bestandsaufnahme. Danach wieder ohne den Parameter neu verbinden.
+      const alle = url.searchParams.get('features') === 'all';
+      res.writeHead(302, { Location: oauth.authorizeUrl(oauth.createState(alle)) });
       return res.end();
     }
 
@@ -255,7 +258,8 @@ export const app = http.createServer(async (req, res) => {
           <p><a class="btn" href="/setup">Zurück</a></p>`);
       }
 
-      if (!oauth.consumeState(url.searchParams.get('state'))) {
+      const stateOptions = oauth.consumeState(url.searchParams.get('state'));
+      if (!stateOptions) {
         return sendPage(res, 400, 'Abgelaufen oder nicht angefordert', `
           <div class="box">Dieser Rückruf gehört zu keinem laufenden Vorgang. Codes sind kurzlebig.</div>
           <p>Starte den Vorgang neu.</p>
@@ -264,10 +268,11 @@ export const app = http.createServer(async (req, res) => {
 
       try {
         const token = await oauth.exchangeCode(code);
-        const registration = await oauth.registerWebhook(token.access_token);
+        const registration = await oauth.registerWebhook(token.access_token, { alle: stateOptions.alle });
         return sendPage(res, 200, 'Webhook eingerichtet', `
           <div class="box">Nuki schickt Ereignisse ab sofort an
-          <code>${oauth.webhookTarget()}</code>.</div>
+          <code>${oauth.webhookTarget()}</code>.<br>
+          Registrierte Features: <code>${oauth.featureList(stateOptions.alle).join(', ')}</code></div>
           <p>Das Secret liegt in der Datenbank, du musst nichts nach Railway kopieren.
           Registrierungs-ID: <code>${registration.id ?? '—'}</code></p>
           <p>Sperre zur Probe ein Schloss über die Nuki App. Innerhalb von Sekunden
@@ -279,6 +284,22 @@ export const app = http.createServer(async (req, res) => {
           <div class="box">${err.message}</div>
           <p><a class="btn" href="/oauth/start">Nochmal versuchen</a></p>`);
       }
+    }
+
+    // Zeigt je Feature die zuletzt empfangene Nutzlast und alles, was nach
+    // einem WLAN-Namen aussieht.
+    if (url.pathname === '/api/webhook-samples') {
+      const samples = await db.webhookSamples();
+      return sendJson(res, 200, {
+        features: samples.map((s) => ({
+          feature: s.feature,
+          anzahl: s.anzahl,
+          received_at: s.received_at,
+          wlan_felder: findWifiFields(s.payload),
+          payload: s.payload
+        })),
+        wlan_gefunden: samples.flatMap((s) => findWifiFields(s.payload))
+      });
     }
 
     if (url.pathname === '/api/webhook-status') {
@@ -346,11 +367,11 @@ export const app = http.createServer(async (req, res) => {
         summary: {
           sicher: proposals.filter((p) => p.confidence === 'sicher').length,
           wahrscheinlich: proposals.filter((p) => p.confidence === 'wahrscheinlich').length,
-          pruefen: proposals.filter((p) => p.confidence === 'prüfen').length,
+          widerspruch: proposals.filter((p) => p.confidence === 'widerspruch').length,
           unklar: proposals.filter((p) => p.confidence === 'unklar').length,
-          ohne_koordinaten: proposals.filter((p) => !p.coordinates).length,
-          ohne_ssid: proposals.filter((p) => !p.ssid).length
+          drei_signale: proposals.filter((p) => p.agreeing_signals >= 3).length
         },
+        data_quality: dataQualityReport(proposals),
         proposals
       });
     }

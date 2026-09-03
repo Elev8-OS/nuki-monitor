@@ -88,6 +88,14 @@ export function mapSmartlock(raw) {
     battery_charging: state.batteryCharging ?? null,
     lock_state: state.state ?? null,
     door_sensor_state: state.doorsensorState ?? null,
+    // Ohne aktives Abo gibt es keinen Fernzugriff - das Schloss erscheint dann
+    // offline, obwohl mit dem WLAN alles in Ordnung ist.
+    subscription_state: raw.currentSubscription?.state ?? null,
+    subscription_type: raw.currentSubscription?.type ?? null,
+    // Ist der integrierte WLAN-Schalter aus, laeuft der Fernzugriff gar nicht
+    // ueber WLAN. Auch das sieht von aussen wie ein Netzproblem aus.
+    wifi_enabled: raw.config?.wifiEnabled ?? null,
+    matter_state: raw.config?.matterState ?? null,
     payload: raw
   };
 }

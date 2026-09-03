@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { query, getSetting, setSetting } from './db.js';
+import { query, getSetting, setSetting, storeWebhookSample } from './db.js';
 import { classifyServerState, decodeFirmware } from './nuki.js';
 
 const REQUIRE_SIGNATURE = process.env.NUKI_WEBHOOK_REQUIRE_SIGNATURE !== 'false';
@@ -231,6 +231,9 @@ export async function handleWebhook(body) {
   for (const item of items) {
     const feature = item.feature || item.type || 'unbekannt';
     try {
+      // Immer eine Stichprobe ablegen: nur so laesst sich nachsehen, welche
+      // Felder Nuki tatsaechlich liefert, statt es aus der Doku zu raten.
+      await storeWebhookSample(feature, item).catch(() => {});
       if (feature === 'DEVICE_STATUS') handled.push(...(await handleDeviceStatus(item)));
       else if (feature === 'DEVICE_MASTERDATA') handled.push(...(await handleMasterData(item)));
       else if (feature === 'DEVICE_LOGS') handled.push(...(await handleLogs(item)));
@@ -273,4 +276,34 @@ export async function webhookHealth() {
 
 export async function recordSignatureFailure() {
   await recordDelivery('signature', false, 'Signatur ungueltig');
+}
+
+// Schluessel, die nach einem WLAN-Namen aussehen. Bewusst weit gefasst -
+// wir wissen nicht, wie Nuki das Feld nennt, falls es es ueberhaupt liefert.
+const WIFI_HINT = /(ssid|wifi|wlan|network|netz)/i;
+
+/**
+ * Durchsucht die gespeicherten Stichproben nach allem, was ein WLAN-Name
+ * sein koennte. Damit laesst sich beantworten, ob die Schloesser im Gastnetz
+ * haengen - vorausgesetzt, Nuki liefert die Information ueberhaupt.
+ */
+export function findWifiFields(payload, pfad = '') {
+  const treffer = [];
+  const seen = new Set();
+
+  const walk = (node, path) => {
+    if (!node || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+
+    for (const [key, value] of Object.entries(node)) {
+      const full = path ? `${path}.${key}` : key;
+      if (WIFI_HINT.test(key) && (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')) {
+        treffer.push({ pfad: full, wert: value });
+      }
+      if (value && typeof value === 'object') walk(value, full);
+    }
+  };
+
+  walk(payload, pfad);
+  return treffer;
 }
