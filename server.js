@@ -11,6 +11,12 @@ import { verifySignature, handleWebhook, webhookHealth, webhooksEnabled, recordS
 import * as oauth from './src/oauth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Wird beim Start protokolliert und ueber /healthz ausgeliefert. Damit laesst
+// sich zweifelsfrei feststellen, ob wirklich diese App antwortet.
+const APP_VERSION = JSON.parse(
+  await readFile(join(__dirname, 'package.json'), 'utf8')
+).version;
 const PORT = process.env.PORT || 3000;
 const DASHBOARD_USER = process.env.DASHBOARD_USER || '';
 const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD || '';
@@ -112,7 +118,25 @@ async function evaluateAlertsSafely(devices) {
 export const app = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
-  if (url.pathname === '/healthz') return sendJson(res, 200, { ok: true });
+  if (url.pathname === '/healthz') {
+    // Antwortet auch, solange die Datenbank noch nicht bereit ist. Damit laesst
+    // sich unterscheiden, ob der Dienst laeuft oder Railway den 404 liefert.
+    let database = 'unbekannt';
+    try {
+      await db.query('select 1');
+      database = 'verbunden';
+    } catch (error) {
+      database = 'nicht verbunden: ' + error.message;
+    }
+    return sendJson(res, 200, {
+      app: 'nuki-monitor',
+      version: APP_VERSION,
+      ok: true,
+      auth_required: Boolean(DASHBOARD_PASSWORD),
+      database,
+      time: new Date().toISOString()
+    });
+  }
 
   // Nuki authentifiziert sich ueber die HMAC-Signatur, nicht ueber Basic Auth.
   // Diese Route muss immer schnell mit 200 antworten: Nuki warnt ab 5 Prozent
@@ -420,18 +444,46 @@ export const app = http.createServer(async (req, res) => {
   }
 });
 
+// Ein unbehandelter Fehler darf den Dienst nicht wortlos beenden. Sonst
+// bekommen laufende Anfragen eine leere Antwort und niemand sieht den Grund.
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] Unbehandelte Promise-Ablehnung:', reason?.stack || reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('[fatal] Unbehandelter Fehler:', error?.stack || error);
+});
+
 if (process.env.NODE_ENV !== 'test') {
-  db.migrate()
-    .then(() => loadSecret())
-    .then(() => {
-      app.listen(PORT, () => console.log(`Nuki Monitor laeuft auf Port ${PORT}`));
-      if (webhooksEnabled()) {
-        console.log('Webhooks aktiv. Der Poll laeuft nur noch als Abgleich.');
-      }
+  // Zuerst lauschen, dann die Datenbank einrichten. Railways privates Netzwerk
+  // braucht nach dem Containerstart einige Sekunden, bis postgres.railway.internal
+  // aufloest. Wer dabei sofort aufgibt, hinterlaesst einen Dienst, der gar nicht
+  // erst hochkommt - und Railway antwortet dann auf jeden Pfad mit einem 404.
+  app.listen(PORT, () => {
+    console.log(`Nuki Monitor ${APP_VERSION} laeuft auf Port ${PORT}`);
+    console.log(
+      DASHBOARD_PASSWORD
+        ? 'Zugriffsschutz aktiv.'
+        : 'WARNUNG: DASHBOARD_PASSWORD ist leer, das Dashboard ist oeffentlich erreichbar.'
+    );
+  });
+
+  const startDatabase = async (attempt = 1) => {
+    try {
+      await db.migrate();
+      await loadSecret();
+      console.log('Datenbank bereit.');
+      if (webhooksEnabled()) console.log('Webhooks aktiv. Der Poll laeuft nur noch als Abgleich.');
       startPolling();
-    })
-    .catch((error) => {
-      console.error('Start fehlgeschlagen:', error.message);
-      process.exit(1);
-    });
+    } catch (error) {
+      const wait = Math.min(30, attempt * 3);
+      console.error(`[db] Start fehlgeschlagen (Versuch ${attempt}): ${error.message}`);
+      if (attempt === 1) {
+        console.error('[db] Pruefe DATABASE_URL und DATABASE_SSL. Interne Adresse: false, oeffentliche Proxy-Adresse: true.');
+      }
+      console.error(`[db] Neuer Versuch in ${wait} Sekunden.`);
+      setTimeout(() => startDatabase(attempt + 1), wait * 1000);
+    }
+  };
+
+  startDatabase();
 }
