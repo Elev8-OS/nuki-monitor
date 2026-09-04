@@ -87,8 +87,8 @@
   <div id="matchBox"></div>
 
   <h2>Schlösser zuordnen</h2>
-  <p class="lede">Von Hand nachbessern, was die automatische Zuordnung offen gelassen hat.</p>
-  <table><thead><tr><th>Schloss</th><th>Standort</th></tr></thead><tbody id="deviceRows"></tbody></table>
+  <p class="lede">Von Hand nachbessern, was die automatische Zuordnung offen gelassen hat. Ausgemusterte Geräte hier ausblenden — sie stehen dauerhaft offline und verzerren sonst jede Statistik.</p>
+  <table><thead><tr><th>Schloss</th><th>Standort</th><th>Auswerten</th></tr></thead><tbody id="deviceRows"></tbody></table>
 
   <h2>Änderung eintragen</h2>
   <p class="lede">Jede Umstellung am Router gehört hier hinein. Das Dashboard vergleicht danach automatisch 72 Stunden davor mit 72 Stunden danach.</p>
@@ -230,19 +230,25 @@ async function loadAll() {
     return tr;
   }));
 
-  $('deviceRows').replaceChildren(...overview.devices.map((device) => {
+  const alleGeraete = (await api('/api/devices/all')).devices;
+
+  $('deviceRows').replaceChildren(...alleGeraete.map((device) => {
     const tr = document.createElement('tr');
+    if (device.ignored) tr.style.opacity = '0.5';
+
     tr.appendChild(cell(device.name));
+
     const td = document.createElement('td');
     const select = document.createElement('select');
     select.append(new Option('ohne Standort', ''));
     sites.forEach((s) => select.append(new Option(s.name, s.id)));
     select.value = device.site_id ? String(device.site_id) : '';
+    select.disabled = device.ignored;
     select.onchange = async () => {
       await api('/api/assign', {
         method: 'POST',
         body: JSON.stringify({
-          smartlock_id: device.smartlock_id,
+          smartlock_id: Number(device.smartlock_id),
           site_id: select.value ? Number(select.value) : null
         })
       });
@@ -251,6 +257,23 @@ async function loadAll() {
     };
     td.appendChild(select);
     tr.appendChild(td);
+
+    const td2 = document.createElement('td');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = !device.ignored;
+    box.title = 'Häkchen entfernen, um das Gerät aus allen Auswertungen zu nehmen';
+    box.onchange = async () => {
+      await api('/api/device/ignore', {
+        method: 'POST',
+        body: JSON.stringify({ smartlock_id: Number(device.smartlock_id), ignored: !box.checked })
+      });
+      message(box.checked ? `${device.name} wird ausgewertet.` : `${device.name} ausgeblendet.`);
+      loadAll();
+    };
+    td2.appendChild(box);
+    tr.appendChild(td2);
+
     return tr;
   }));
 

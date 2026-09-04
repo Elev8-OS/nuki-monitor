@@ -192,6 +192,28 @@ assert.equal(dense.gaps.length, 0);
 assert.equal(dense.coverage, 1);
 console.log('✓ Lueckenlose Messung ergibt volle Abdeckung');
 
+// Mit aktiven Webhooks pollt die App nur alle 15 Minuten. Wird trotzdem mit
+// 60 Sekunden gerechnet, landet die Abdeckung faelschlich bei 0 Prozent.
+const alle15min = Array.from({ length: 17 }, (_, i) => ({
+  started_at: new Date(from.getTime() + i * 15 * 60000).toISOString()
+}));
+
+const falsch = buildCoverage(alle15min, from, to, { webhooksAktiv: false });
+assert.ok(falsch.coverage < 0.2, 'Aufbau des Testfalls stimmt nicht');
+
+const richtig = buildCoverage(alle15min, from, to, { webhooksAktiv: true });
+assert.equal(richtig.gaps.length, 0, 'Abgleich alle 15 Minuten ist bei aktiven Webhooks keine Lücke');
+assert.equal(richtig.coverage, 1);
+console.log('✓ Abdeckung rechnet mit dem tatsächlichen Intervall statt mit 60 Sekunden');
+
+// Ein empfangener Webhook ist genauso ein Lebenszeichen wie ein Poll.
+const nurWebhooks = buildCoverage([], from, to, {
+  webhooksAktiv: true,
+  webhookZeiten: Array.from({ length: 17 }, (_, i) => new Date(from.getTime() + i * 15 * 60000).toISOString())
+});
+assert.equal(nurWebhooks.coverage, 1, 'Webhooks zählen nicht als Lebenszeichen');
+console.log('✓ Empfangene Webhooks zählen als Lebenszeichen');
+
 // --- Akkuverlauf -------------------------------------------------------
 const trend = batteryTrend([
   { sampled_at: '2026-01-01T00:00:00Z', battery_charge: 90 },
@@ -605,6 +627,75 @@ await db.createSite({ name: 'SH Neustadt 2', latitude: 47.693858, longitude: 8.6
 assert.equal((await db.listSites()).find((x) => x.name === 'SH Neustadt 2').router_model, 'Internet-Box 4',
   'ein erneuter Import hat gepflegte Werte geloescht');
 console.log('✓ Import, Vorschlag, Anwendung und Schutz gepflegter Werte über HTTP');
+
+// --- Kennzahlen muessen die Geraete benennen ---------------------------
+{
+  const from = new Date(Date.now() - 86400000);
+  const to = new Date();
+  const uebersicht = buildOverview({
+    devices: [
+      { smartlock_id: 1, name: 'Ultra mit WLAN', online: true, wifi_enabled: true, device_type: 5,
+        subscription_state: 'ACTIVE', battery_critical: false, last_payload: {} },
+      { smartlock_id: 2, name: 'Opener ohne WLAN', online: false, wifi_enabled: false, device_type: 2,
+        firmware_version: 67840, subscription_state: 'ACTIVE', battery_critical: false, last_payload: {} },
+      { smartlock_id: 3, name: 'Ohne Abo', online: false, wifi_enabled: true, device_type: 5,
+        subscription_state: 'CANCELLED', battery_critical: true, last_payload: {} }
+    ],
+    events: [], priorState: new Map(), pollRuns: [], from, to
+  });
+
+  assert.equal(uebersicht.summary.wifi_disabled, 1);
+  assert.deepEqual(uebersicht.summary.betroffen.wifi_disabled, ['Opener ohne WLAN (Typ 2, FW 1.9.0)'],
+    'die Kennzahl muss Name, Gerätetyp und Firmware nennen');
+  assert.deepEqual(uebersicht.summary.betroffen.subscription_inactive, ['Ohne Abo (CANCELLED)']);
+  assert.deepEqual(uebersicht.summary.betroffen.battery_critical, ['Ohne Abo']);
+  assert.deepEqual(uebersicht.summary.betroffen.offline_now.sort(), ['Ohne Abo', 'Opener ohne WLAN']);
+  console.log('✓ Jede Kennzahl nennt die betroffenen Geräte samt Typ und Firmware');
+}
+
+// --- Ausgemusterte Geraete ---------------------------------------------
+const vorher = (await db.listDevices()).length;
+const ausgeblendet = await api('/api/device/ignore', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ smartlock_id: 222, ignored: true })
+});
+assert.equal(ausgeblendet.status, 200);
+assert.equal(ausgeblendet.body.ignored, true);
+
+const nachher = await db.listDevices();
+assert.equal(nachher.length, vorher - 1, 'ausgeblendetes Gerät erscheint noch in der Auswertung');
+assert.ok(!nachher.some((d) => Number(d.smartlock_id) === 222));
+assert.equal((await db.listDevices({ mitIgnorierten: true })).length, vorher);
+assert.equal((await db.countIgnored()), 1);
+
+// In der Zuordnung darf es auch nicht mehr auftauchen
+assert.ok(!(await db.devicesForMatching()).some((d) => Number(d.smartlock_id) === 222));
+
+// und wieder zurueck
+await api('/api/device/ignore', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ smartlock_id: 222, ignored: false })
+});
+assert.equal((await db.listDevices()).length, vorher);
+console.log('✓ Ausgemusterte Geräte verschwinden aus Auswertung und Zuordnung');
+
+// --- Zentraler Webhook -------------------------------------------------
+// Muss ohne Signaturpruefung mit 200 antworten, damit Nuki die Zustellung
+// nicht abschaltet - und darf keine Ereignisse doppelt erzeugen.
+const vorherEreignisse = (await db.eventsSince(new Date(0))).length;
+const zentral = await api('/api/nuki/webhook/central', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ feature: 'DEVICE_STATUS', smartlockId: 111, serverState: 4 })
+});
+assert.equal(zentral.status, 200);
+assert.equal((await db.eventsSince(new Date(0))).length, vorherEreignisse,
+  'der zentrale Webhook hat Ereignisse erzeugt und würde damit doppelt zählen');
+const zentralProben = await api('/api/webhook-samples?limit=500');
+assert.ok(zentralProben.body.samples.some((x) => x.feature.startsWith('ZENTRAL_')));
+console.log('✓ Zentraler Webhook wird angenommen, aber nicht doppelt verarbeitet');
 
 // --- OAuth-Ablauf ------------------------------------------------------
 const oauthModule = await import('../src/oauth.js');

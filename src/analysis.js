@@ -1,6 +1,15 @@
 import { decodeFirmware } from './nuki.js';
 
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_SECONDS || 60) * 1000;
+/**
+ * Das wirksame Intervall haengt davon ab, ob Webhooks laufen: dann pollt die
+ * App nur noch als Abgleich. Wer hier mit 60 Sekunden rechnet, waehrend
+ * tatsaechlich alle 15 Minuten gepollt wird, erklaert jede Luecke zur
+ * Messluecke - und landet bei 0 Prozent Abdeckung.
+ */
+const effectiveIntervalMs = (webhooksAktiv) =>
+  webhooksAktiv
+    ? Number(process.env.RECONCILE_INTERVAL_SECONDS || 900) * 1000
+    : Number(process.env.POLL_INTERVAL_SECONDS || 60) * 1000;
 
 /**
  * Baut aus den online/offline-Ereignissen eines Geraets die Offline-Phasen.
@@ -38,13 +47,21 @@ export function buildOutages(events, from, to, startedOffline) {
  * Messluecken: Zeitraeume, in denen die App gar nicht gepollt hat, etwa weil
  * Railway neu gestartet hat. Stille ist dort kein Beleg fuer Stabilitaet.
  */
-export function buildCoverage(pollRuns, from, to) {
-  const threshold = POLL_INTERVAL_MS * 3;
+export function buildCoverage(pollRuns, from, to, { webhooksAktiv = false, webhookZeiten = [] } = {}) {
+  const threshold = effectiveIntervalMs(webhooksAktiv) * 3;
+
+  // Ein empfangener Webhook ist genauso ein Lebenszeichen wie ein Poll.
+  const zeitpunkte = [
+    ...pollRuns.map((r) => new Date(r.started_at).getTime()),
+    ...webhookZeiten.map((z) => new Date(z).getTime())
+  ]
+    .filter((t) => Number.isFinite(t))
+    .sort((a, b) => a - b);
+
   const gaps = [];
   let cursor = from.getTime();
 
-  for (const run of pollRuns) {
-    const at = new Date(run.started_at).getTime();
+  for (const at of zeitpunkte) {
     if (at - cursor > threshold) gaps.push({ start: new Date(cursor).toISOString(), end: new Date(at).toISOString() });
     cursor = Math.max(cursor, at);
   }
@@ -81,7 +98,10 @@ export function batteryTrend(samples) {
   };
 }
 
-export function buildOverview({ devices, events, priorState, pollRuns, from, to, changes = [] }) {
+export function buildOverview({
+  devices, events, priorState, pollRuns, from, to, changes = [],
+  webhooksAktiv = false, webhookZeiten = []
+}) {
   const byDevice = new Map();
   for (const event of events) {
     const key = String(event.smartlock_id);
@@ -119,6 +139,7 @@ export function buildOverview({ devices, events, priorState, pollRuns, from, to,
       battery_critical: device.battery_critical,
       subscription_state: device.subscription_state ?? null,
       wifi_enabled: device.wifi_enabled ?? null,
+      device_type: device.device_type ?? null,
       lock_state: device.lock_state,
       last_polled_at: device.last_polled_at,
       disconnects: connectivity.filter((e) => e.kind === 'offline').length,
@@ -176,7 +197,10 @@ export function buildOverview({ devices, events, priorState, pollRuns, from, to,
     if (stamps[i].t - stamps[i - 1].t <= 10 * 60 * 1000 && stamps[i].id !== stamps[i - 1].id) clustered += 1;
   }
 
-  const coverage = buildCoverage(pollRuns, from, to);
+  const coverage = buildCoverage(pollRuns, from, to, {
+    webhooksAktiv: Boolean(webhooksAktiv),
+    webhookZeiten
+  });
 
   return {
     window: { from: from.toISOString(), to: to.toISOString(), days: Math.round((to - from) / 86400000) },
@@ -197,6 +221,21 @@ export function buildOverview({ devices, events, priorState, pollRuns, from, to,
         (r) => r.subscription_state && r.subscription_state !== 'ACTIVE'
       ).length,
       wifi_disabled: rows.filter((r) => r.wifi_enabled === false).length,
+      // Zu jeder Auffaelligkeit die Namen, damit man die Zahl selbst pruefen
+      // kann statt ihr glauben zu muessen.
+      betroffen: {
+        subscription_inactive: rows
+          .filter((r) => r.subscription_state && r.subscription_state !== 'ACTIVE')
+          .map((r) => `${r.name} (${r.subscription_state})`),
+        wifi_disabled: rows
+          .filter((r) => r.wifi_enabled === false)
+          .map((r) => `${r.name} (Typ ${r.device_type ?? '?'}, FW ${r.firmware || r.firmware_raw || '?'})`),
+        needs_reconnect: rows
+          .filter((r) => r.needs_reconnect === true)
+          .map((r) => `${r.name} (serverState ${r.server_state})`),
+        battery_critical: rows.filter((r) => r.battery_critical === true).map((r) => r.name),
+        offline_now: rows.filter((r) => r.online === false).map((r) => r.name)
+      },
       firmware_versions: [...new Set(rows.map((r) => r.firmware).filter(Boolean))].sort(),
       worst_availability: rows.length ? Math.min(...rows.map((r) => r.availability ?? 1)) : null,
       unassigned_devices: rows.filter((r) => !r.site_name).length

@@ -91,18 +91,24 @@ async function overview(days) {
   const from = windowFrom(days);
   const to = new Date();
 
-  const [devices, events, priorState, pollRuns, health, changes] = await Promise.all([
+  const [devices, events, priorState, pollRuns, health, changes, webhookZeiten] = await Promise.all([
     db.listDevices(),
     db.eventsSince(from),
     db.stateBefore(from),
     db.pollRunsSince(from),
     db.pollHealth(),
-    db.listChanges()
+    db.listChanges(),
+    db.webhookTimesSince(from)
   ]);
 
-  const data = buildOverview({ devices, events, priorState, pollRuns, from, to, changes });
+  const data = buildOverview({
+    devices, events, priorState, pollRuns, from, to, changes,
+    webhooksAktiv: webhooksEnabled(),
+    webhookZeiten
+  });
   data.poller = health;
   data.open_alerts = (await db.listAlerts(50)).filter((a) => !a.closed_at);
+  data.ignoriert = await db.countIgnored();
   data.webhooks = await webhookHealth();
   return data;
 }
@@ -168,6 +174,34 @@ export const app = http.createServer(async (req, res) => {
       return;
     } catch (error) {
       console.error('[webhook]', error.message);
+      return sendJson(res, 200, { received: false });
+    }
+  }
+
+  /**
+   * Eigener Pfad fuer den ZENTRALEN Webhook aus Nuki Web. Der nutzt ein anderes
+   * Secret als der dezentrale, weshalb er an /api/nuki/webhook mit 401 abprallt
+   * und dort massenhaft Signaturfehler produziert. Hier wird er angenommen,
+   * mit 200 bestaetigt und nur als Stichprobe abgelegt - verarbeitet wird er
+   * nicht, sonst zaehlt jedes Ereignis doppelt.
+   */
+  if (url.pathname === '/api/nuki/webhook/central' && req.method === 'POST') {
+    try {
+      const raw = await readRawBody(req);
+      let payload = null;
+      try {
+        payload = JSON.parse(raw.toString('utf8'));
+      } catch {
+        return sendJson(res, 200, { received: true, ignored: 'kein gueltiges JSON' });
+      }
+      const items = Array.isArray(payload) ? payload : [payload];
+      for (const item of items) {
+        await db
+          .storeWebhookSample('ZENTRAL_' + (item.feature || 'unbekannt'), redact(item))
+          .catch(() => {});
+      }
+      return sendJson(res, 200, { received: true, gespeichert: items.length });
+    } catch {
       return sendJson(res, 200, { received: false });
     }
   }
@@ -424,6 +458,18 @@ export const app = http.createServer(async (req, res) => {
         applied += 1;
       }
       return sendJson(res, 200, { applied });
+    }
+
+    // Ausgemusterte Geraete aus allen Auswertungen und Alarmen nehmen.
+    if (url.pathname === '/api/device/ignore' && req.method === 'POST') {
+      const body = await readBody(req);
+      const geaendert = await db.setDeviceIgnored(body.smartlock_id, body.ignored);
+      if (!geaendert) return sendJson(res, 404, { error: 'Schloss nicht gefunden.' });
+      return sendJson(res, 200, geaendert);
+    }
+
+    if (url.pathname === '/api/devices/all') {
+      return sendJson(res, 200, { devices: await db.listDevices({ mitIgnorierten: true }) });
     }
 
     if (url.pathname === '/api/assign' && req.method === 'POST') {

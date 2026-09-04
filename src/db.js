@@ -159,6 +159,7 @@ alter table devices add column if not exists subscription_state text;
 alter table devices add column if not exists subscription_type text;
 alter table devices add column if not exists wifi_enabled boolean;
 alter table devices add column if not exists matter_state integer;
+alter table devices add column if not exists ignored boolean not null default false;
 
 create table if not exists webhook_samples (
   id          bigserial primary key,
@@ -232,15 +233,33 @@ export async function setSetting(key, value) {
 
 // --------------------------------------------------------------- Geraete
 
-export async function listDevices() {
+/**
+ * Standardmaessig ohne ausgemusterte Geraete. Ein dauerhaft offline stehendes
+ * Altgeraet im Nuki-Konto verzerrt sonst jede Statistik.
+ */
+export async function listDevices({ mitIgnorierten = false } = {}) {
   const { rows } = await query(
     `select d.*, s.id as site_id, s.name as site_name, s.router_model, s.wpa_mode, s.wifi_channel, s.has_mesh
      from devices d
      left join device_sites ds on ds.smartlock_id = d.smartlock_id
      left join sites s on s.id = ds.site_id
+     ${mitIgnorierten ? '' : 'where d.ignored = false'}
      order by d.name asc`
   );
   return rows;
+}
+
+export async function setDeviceIgnored(smartlockId, ignored) {
+  const { rows } = await query(
+    'update devices set ignored = $2 where smartlock_id = $1 returning smartlock_id, name, ignored',
+    [smartlockId, Boolean(ignored)]
+  );
+  return rows[0] || null;
+}
+
+export async function countIgnored() {
+  const { rows } = await query('select count(*)::int as anzahl from devices where ignored = true');
+  return rows[0]?.anzahl || 0;
 }
 
 export async function eventsSince(from, kinds = null) {
@@ -308,6 +327,15 @@ export async function pollRunsSince(from) {
     [from]
   );
   return rows;
+}
+
+/** Zeitpunkte empfangener Webhooks - dienen als Lebenszeichen fuer die Abdeckung. */
+export async function webhookTimesSince(from) {
+  const { rows } = await query(
+    "select received_at from webhook_deliveries where received_at >= $1 and ok = true and feature <> 'signature' order by received_at asc",
+    [from]
+  );
+  return rows.map((r) => r.received_at);
 }
 
 export async function pollHealth() {
@@ -415,6 +443,7 @@ export async function devicesForMatching() {
   const { rows } = await query(
     `select d.smartlock_id, d.name, d.last_payload, ds.site_id
      from devices d left join device_sites ds on ds.smartlock_id = d.smartlock_id
+     where d.ignored = false
      order by d.name asc`
   );
   return rows;

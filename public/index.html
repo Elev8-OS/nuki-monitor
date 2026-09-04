@@ -506,14 +506,20 @@ async function load() {
     if (data.webhooks?.signature_failures_24h > 0) {
       message(`${data.webhooks.signature_failures_24h} Webhooks wurden wegen ungültiger Signatur abgewiesen. Stimmt NUKI_WEBHOOK_SECRET mit dem Secret aus der Registrierung überein?`, 'error');
     }
+    const namen = (liste) => (liste?.length ? ' Betroffen: ' + liste.join(', ') + '.' : '');
+    const b = data.summary.betroffen || {};
+
     if (data.summary.subscription_inactive > 0) {
-      message(`${data.summary.subscription_inactive} Schlösser haben kein aktives Nuki-Abo. Ohne Abo gibt es keinen Fernzugriff — das Schloss erscheint offline, obwohl das WLAN in Ordnung ist. Prüfe das, bevor du an den Routern etwas änderst.`, 'error');
+      message(`${data.summary.subscription_inactive} Schlösser haben kein aktives Nuki-Abo. Ohne Abo gibt es keinen Fernzugriff — das Schloss erscheint offline, obwohl das WLAN in Ordnung ist. Prüfe das, bevor du an den Routern etwas änderst.${namen(b.subscription_inactive)}`, 'error');
     }
     if (data.summary.wifi_disabled > 0) {
-      message(`${data.summary.wifi_disabled} Schlösser haben das integrierte WLAN-Modul deaktiviert. Deren Fernzugriff läuft nicht über WLAN, sie gehören nicht in den Router-Vergleich.`, 'error');
+      message(`Bei ${data.summary.wifi_disabled} Geräten meldet Nuki wifiEnabled = false. Das heisst entweder, dass das WLAN abgeschaltet wurde, oder dass gar kein WLAN-Modul verbaut ist — Opener und ältere Modelle ohne Pro melden dasselbe. In beiden Fällen läuft der Fernzugriff nicht über WLAN, sie gehören nicht in den Router-Vergleich.${namen(b.wifi_disabled)}`);
     }
     if (data.summary.needs_reconnect > 0) {
-      message(`${data.summary.needs_reconnect} Schlösser melden ein Autorisierungsproblem (serverState 1 bis 3). Das ist kein WLAN-Ausfall: die Verbindung zum Nuki-Web-Konto muss neu hergestellt werden.`, 'error');
+      message(`${data.summary.needs_reconnect} Schlösser melden ein Autorisierungsproblem (serverState 1 bis 3). Das ist kein WLAN-Ausfall: die Verbindung zum Nuki-Web-Konto muss neu hergestellt werden.${namen(b.needs_reconnect)}`, 'error');
+    }
+    if (data.summary.battery_critical > 0) {
+      message(`${data.summary.battery_critical} Schlösser melden einen kritischen Akku.${namen(b.battery_critical)}`);
     }
     if (data.summary.unassigned_devices > 0) {
       message(`${data.summary.unassigned_devices} Schlösser sind keinem Standort zugeordnet. Ohne Zuordnung gibt es keinen Standortvergleich.`);
